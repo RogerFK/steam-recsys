@@ -161,3 +161,6 @@ cython_debug/
 data/
 
 .vscode/
+
+# Specific to this project
+/test_output/

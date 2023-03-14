@@ -52,17 +52,20 @@ class PlaytimeNormalizerBase(ABC):
             denominators = data.groupby("steamid")["playtime_forever"].max()
         elif self.denominator_function == "mean":
             denominators = data.groupby("steamid")["playtime_forever"].mean()
-        elif self.denominator_function == "sum" or self.denominator_function == "sum_max":
+        elif self.denominator_function == "sum":
             denominators = data.groupby("steamid")["playtime_forever"].sum()
+        elif self.denominator_function == "sum_max":
+            denominators = data.groupby("steamid")["playtime_forever"].sum()
+            max_denominators = data.groupby("steamid")["playtime_forever"].max()
+            # now multiply every sum by the max denominator
+            for steamid, denominator in max_denominators.items():
+                denominators[steamid] *= denominator
         elif self.denominator_function == "median":
             denominators = data.groupby("steamid")["playtime_forever"].median()
         else:
             raise ValueError("divide_by must be either 'max', 'mean', 'sum' or 'median'")
         
         data["playtime_forever"] = data.apply(lambda x: self.output_multiplier * self.normalize_value(x["playtime_forever"], denominators[x["steamid"]]), axis=1)
-        if self.denominator_function == "sum_max":
-            denominators = data.groupby("steamid")["playtime_forever"].max()
-            data["playtime_forever"] = data.apply(lambda x: self.output_multiplier * x["playtime_forever"] / denominators[x["steamid"]], axis=1)
         return data
     
     def validate_data(self, data: DataFrame):
@@ -77,6 +80,11 @@ class PlaytimeNormalizerBase(ABC):
         # check if the data has the correct types
         if not all([data[col].dtype == "int64" for col in ["steamid", "appid"]]):
             raise ValueError("The DataFrame must have the columns 'steamid' and 'appid' as integer values.")
+    
+    def __str__(self) -> str:
+        name = self.__class__.__name__
+        name = name[0:name.index("PlaytimeNormalizer")] + "PN"
+        return name + f"_{self.denominator_function}"
     
 
 class LinearPlaytimeNormalizer(PlaytimeNormalizerBase):

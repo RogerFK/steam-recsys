@@ -38,7 +38,7 @@ def test_normalize():
     print("Linear output\n", linear_norm_max.normalize(data))
     normalized = linear_norm_max.normalize(data)
     normalized.to_csv("./test_output/linear_normalized_max.csv", index=False)
-    if linear_expected_max: assert_frame_equal(normalized, linear_expected_max)
+    if linear_expected_max is not None: assert_frame_equal(normalized, linear_expected_max)
     print("Timing for linear normalization (max)")
     print(timeit.timeit("linear_norm_max.normalize(data)", setup="from normalization_tests import linear_norm_max, data", number=TIMEIT_ITERATIONS))
 
@@ -50,7 +50,7 @@ def test_normalize():
     print("Log output\n", normalized)
     normalized.to_csv("./test_output/log_normalized_max.csv", index=False)
     print(log_expected_max)
-    if log_expected_max: assert_frame_equal(normalized, log_expected_max)
+    if log_expected_max is not None: assert_frame_equal(normalized, log_expected_max)
     print("Timing for log normalization (max)")
     print(timeit.timeit("log_norm_max.normalize(data)", setup="from normalization_tests import log_norm_max, data", number=TIMEIT_ITERATIONS))
 
@@ -61,7 +61,7 @@ def test_normalize():
     normalized = root_norm_max.normalize(data)
     print("Root output\n", normalized)
     normalized.to_csv("./test_output/root_normalized_max.csv", index=False)
-    if root_expected_max: assert_frame_equal(normalized, root_expected_max)
+    if root_expected_max is not None: assert_frame_equal(normalized, root_expected_max)
     print("Timing for root normalization (max)")
     print(timeit.timeit("root_norm_max.normalize(data)", setup="from normalization_tests import root_norm_max, data", number=TIMEIT_ITERATIONS))
     
@@ -74,7 +74,7 @@ def test_normalize():
     normalized = linear_norm_sum.normalize(data)
     print("Linear output\n", normalized)
     normalized.to_csv("./test_output/linear_normalized_sum.csv", index=False)
-    if linear_expected_sum: assert_frame_equal(normalized, linear_expected_sum)
+    if linear_expected_sum is not None: assert_frame_equal(normalized, linear_expected_sum)
     print("Timing for linear normalization (sum)")
     print(timeit.timeit("linear_norm_sum.normalize(data)", setup="from normalization_tests import linear_norm_sum, data", number=TIMEIT_ITERATIONS))
 
@@ -85,7 +85,7 @@ def test_normalize():
     normalized = log_norm_sum.normalize(data)
     print("Log output\n", normalized)
     normalized.to_csv("./test_output/log_normalized_sum.csv", index=False)
-    if log_expected_sum: assert_frame_equal(normalized, log_expected_sum)
+    if log_expected_sum is not None: assert_frame_equal(normalized, log_expected_sum)
     print("Timing for log normalization (sum)")
     print(timeit.timeit("log_norm_sum.normalize(data)", setup="from normalization_tests import log_norm_sum, data", number=TIMEIT_ITERATIONS))
 
@@ -96,7 +96,7 @@ def test_normalize():
     normalized = root_norm_sum.normalize(data)
     print("Root output\n", normalized)
     normalized.to_csv("./test_output/root_normalized_sum.csv", index=False)
-    if root_expected_sum: assert_frame_equal(normalized, root_expected_sum)
+    if root_expected_sum is not None: assert_frame_equal(normalized, root_expected_sum)
     print("Timing for root normalization (sum)")
     print(timeit.timeit("root_norm_sum.normalize(data)", setup="from normalization_tests import root_norm_sum, data", number=TIMEIT_ITERATIONS))          
 
@@ -108,7 +108,7 @@ def test_normalize():
     normalized = linear_norm_sum_max.normalize(data)
     print("Linear output\n", normalized)
     normalized.to_csv("./test_output/linear_normalized_sum_max.csv", index=False)
-    if linear_expected_sum_max:
+    if linear_expected_sum_max is not None:
         assert_frame_equal(normalized, linear_expected_sum_max)
     print("Timing for linear normalization (sum_max)")
     print(timeit.timeit("linear_norm_sum_max.normalize(data)", setup="from normalization_tests import linear_norm_sum_max, data", number=TIMEIT_ITERATIONS))
@@ -120,7 +120,7 @@ def test_normalize():
     normalized = log_norm_sum_max.normalize(data)
     print("Log output\n", normalized)
     normalized.to_csv("./test_output/log_normalized_sum_max.csv", index=False)
-    if log_expected_sum_max:
+    if log_expected_sum_max is not None:
         assert_frame_equal(normalized, log_expected_sum_max)
     print("Timing for log normalization (sum_max)")
     print(timeit.timeit("log_norm_sum_max.normalize(data)", setup="from normalization_tests import log_norm_sum_max, data", number=TIMEIT_ITERATIONS))
@@ -131,7 +131,7 @@ def test_normalize():
     normalized = root_norm_sum_max.normalize(data)
     print("Root output\n", normalized)
     normalized.to_csv("./test_output/root_normalized_sum_max.csv", index=False)
-    if root_expected_sum_max:
+    if root_expected_sum_max is not None:
         assert_frame_equal(normalized, root_expected_sum_max)
     print("Timing for root normalization (sum_max)")
     print(timeit.timeit("root_norm_sum_max.normalize(data)", setup="from normalization_tests import root_norm_sum_max, data", number=TIMEIT_ITERATIONS))

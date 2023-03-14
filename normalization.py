@@ -1,4 +1,4 @@
-from abc import ABCMeta, abstractmethod
+from abc import ABC, abstractmethod
 import pandas as pd
 from pandas.core.api import DataFrame
 import numpy as np
@@ -7,7 +7,7 @@ import pandas.core.groupby as pdg
 # import GroupBy
 from pandas.core.groupby.groupby import GroupBy
 
-class PlaytimeNormalizerBase(metaclass=ABCMeta):
+class PlaytimeNormalizerBase(ABC):
     def __init__(self, denominator_function: str, playtime_approach: str = "minutes_always_more_than_60", output_multiplier: int = 5, inplace: bool = False):
         self.inplace = inplace
         self.denominator_function = denominator_function

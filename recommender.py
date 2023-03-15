@@ -8,23 +8,26 @@ from queue import PriorityQueue
 import pickle
 import os
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+def trivial_hash(x):
+        return x
 class RecommenderDataBase(ABC):
     def __init__(self, csv_filename: str, pickle_filename: str):
         self.processed_data = None
         self.data = None
         try:
             with open(f"bin_data/{pickle_filename}.pickle", "rb") as f:
-                print("Loading data...")
+                logging.info("Loading data...")
                 self.processed_data = pickle.load(f)
                 self.data = self.processed_data["data"]
-                print(f"Loaded data from {f.name}")
+                logging.info(f"Loaded data from {f.name}")
                 return
         except FileNotFoundError:
             try:
                 logging.info(f"Loading data from {csv_filename}...")
                 self.data = pd.read_csv(csv_filename)
             except FileNotFoundError:
-                print("File not found, please check the path and try again")
+                logging.error("File not found, please check the path and try again")
+                raise
     
     def __getitem__(self, key):
         return self.data[key]
@@ -57,6 +60,7 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
             self.data = self.processed_data["data"]
+            self.minhashes = self.processed_data["minhashes"]
             return
         self.validate_data(self.data)
         logging.info("Processing player games...")
@@ -68,15 +72,13 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         # http://ekzhu.com/datasketch/lshensemble.html#minhash-lsh-ensemble
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
-        set_dict = {}
         logging.info("Computing MinHashes for each user...")
         for steamid, row in self.data.groupby("steamid"):
             # we only want to store the appids, we'll get the playtimes later
             user_games = row["appid"].values
-            min_hash = MinHash(num_perm=num_perm, hashfunc=self.trivial_hash)
+            min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
             min_hash.update_batch(user_games)
             lsh_ensemble_index.append((steamid, min_hash, len(user_games)))
-            set_dict[steamid] = set(user_games)
         logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
@@ -89,9 +91,6 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
-    
-    def trivial_hash(self, x):
-        return x
 
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -109,35 +108,51 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
             return 0
         return vals[0]
     
-    def similarity(self, steamid1: int, steamid2: int) -> float:
+    def similarity(self, steamid: int, other: int) -> float:
         """Computes the similarity between two users
 
         Args:
         ---
-        steamid1 (int): The steamid of the first user
-        steamid2 (int): The steamid of the second user
+        steamid (int): The steamid of the user
+        other (int): The steamid of the user to compare to
 
         Returns:
         ---
         float: The similarity between the two users
         """
-        min_hash1, size1 = self.processed_data["minhashes"][steamid1]
-        min_hash2, size2 = self.processed_data["minhashes"][steamid2]
-        return min_hash1.jaccard(min_hash2)
-    
-    def get_similar_users(self, steamid: int):
-        """Gets similar users to a user
+        games_played = self.data.loc[self.data["steamid"] == steamid]
+        other_games_played = self.data.loc[self.data["steamid"] == other]
+        # we only want to compare the games that both users have played
+        games_played = games_played.loc[games_played["appid"].isin(other_games_played["appid"])]
+        total_score = 0
+        for idx, row in games_played.iterrows():
+            _, appid, pseudorating = row
+            total_score += self.rating(appid, other) * pseudorating
+        return total_score  # raw score, but don't penalize for having more games in common
+
+
+    def get_similar_users(self, steamid: int, n: int = 10):
+        """Gets n top similar users to a user
 
         Args:
         ---
         steamid (int): The steamid of the user
+        n (int, optional): The number of similar users to return. Defaults to 10.
 
         Returns:
         ---
         list: A list of tuples (steamid, similarity)
         """
-        min_hash, size = self.processed_data["minhashes"][steamid]
-        return self.lshensemble.query(min_hash, size)
+        min_hash, size = self.minhashes[steamid]
+        rough_similar_users = self.lshensemble.query(min_hash, size)
+        # all of this is copilot's own doing, change for better performance
+        similar_users = []
+        for similar_user in rough_similar_users:
+            if similar_user == steamid:
+                continue
+            similar_users.append((similar_user, self.similarity(steamid, similar_user)))
+        similar_users.sort(key=lambda x: x[1], reverse=True)
+        return similar_users[:n]
         
 
         
@@ -195,9 +210,11 @@ class RecommenderSystemBase(ABC):
             raise ValueError("n must be positive")
 
 class RandomRecommenderSystem(RecommenderSystemBase):
-    def __init__(self):
+    def __init__(self, csv_filename: str = "data/appids.csv"):
         super().__init__()
-    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
+        self.data = pd.read_csv(csv_filename)
+
+    def recommend(self, steamid: int, n: int = 10) -> DataFrame:
         import random
         # it's ordered by (priority, appid), from lower to upper
         # when the priority queue is full, it will pop the lowest priority
@@ -205,7 +222,7 @@ class RandomRecommenderSystem(RecommenderSystemBase):
 
         # pick random games from the dataset and give them a random score
         # the score is a random number between 0 and 5
-        random_data = data.sample(n=n, replace=True)
+        random_data = self.data.sample(n=n*5, replace=True)
         for _, row in random_data.iterrows():
             priority_queue.put((random.random() * 5, row["appid"]))
             if priority_queue.qsize() > n:

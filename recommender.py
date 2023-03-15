@@ -7,6 +7,7 @@ from datasketch import MinHash, MinHashLSH, MinHashLSHEnsemble
 from queue import PriorityQueue
 import pickle
 import os
+import math
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 def trivial_hash(x):
         return x
@@ -222,7 +223,7 @@ class RandomRecommenderSystem(RecommenderSystemBase):
 
         # pick random games from the dataset and give them a random score
         # the score is a random number between 0 and 5
-        random_data = self.data.sample(n=n*5, replace=True)
+        random_data = self.data.sample(n=n*2 + math.floor(math.log10(n)), replace=True)
         for _, row in random_data.iterrows():
             priority_queue.put((random.random() * 5, row["appid"]))
             if priority_queue.qsize() > n:

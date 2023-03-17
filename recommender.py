@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import logging
+from typing import List, Tuple
 from pandas.core.api import DataFrame
 import pandas as pd
 from normalization import PlaytimeNormalizerBase
@@ -25,7 +26,7 @@ class RecommenderDataBase(ABC):
         except FileNotFoundError:
             try:
                 logging.info(f"Loading data from {csv_filename}...")
-                self.data = pd.read_csv(csv_filename)
+                self.data = pd.read_csv(csv_filename) #, dtype={"steamid": "int64", "appid": "int64", "playtime_forever": float})
             except FileNotFoundError:
                 logging.error("File not found, please check the path and try again")
                 raise
@@ -57,7 +58,7 @@ class RecommenderDataBase(ABC):
 
 class PlayerGamesPlaytimeData(RecommenderDataBase):
     pickle_name_fmt = "PGPTData/{}_thres{}_per{}par{}"
-    def __init__(self, filename: str, playtime_normalizer: PlaytimeNormalizerBase, threshold=0.4, num_perm=128, num_part=32):
+    def __init__(self, filename: str, playtime_normalizer: PlaytimeNormalizerBase, threshold=0.8, num_perm=128, num_part=32):
         if not os.path.exists("bin_data/PGPTData"):
             os.makedirs("bin_data/PGPTData")
             # make small readme
@@ -166,8 +167,28 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         
         return total_score  # raw score, but don't penalize for having more games
 
+    def player_similarities_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:
+        """Gets the similarities from a priority queue
 
-    def get_similar_users(self, steamid: int, n: int = 10):
+        Args:
+        ---
+        priority_queue (PriorityQueue): The priority queue to get the similarities from
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: The list of tuples (steamid, similarity)
+        """
+        similar_users = []
+        while not priority_queue.empty():
+            similar_users.append(priority_queue.get())
+        sim_users = pd.DataFrame(reversed(similar_users),
+                                 columns=["similarity", "steamid"],
+                                 dtype=object)
+        # reorder the columns
+        sim_users = sim_users[["steamid", "similarity"]]
+        return sim_users
+
+    def get_similar_users(self, steamid: int, n: int = 10) -> DataFrame:
         """Gets n top similar users to a user. Specially useful for collaborative filtering.
 
         Args:
@@ -185,51 +206,33 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         rough_similar_users = self.lshensemble.query(min_hash, size)
         
         logging.info(f"Finding similar users to {steamid}. Please wait...")
-        # TODO: all of this is copilot's own doing, change with priority queue for better performance
-        similar_users = []
+        priority_queue = PriorityQueue(n + 1)
+        # TODO: Parallelize this loop for faster results
         for similar_user in rough_similar_users:
             if similar_user == steamid:
                 continue
-            similar_users.append((similar_user, self.similarity(steamid, similar_user)))
-        similar_users.sort(key=lambda x: x[1], reverse=True)
+            similarity = self.similarity(steamid, similar_user)
+            priority_queue.put((similarity, similar_user))
+            if priority_queue.qsize() > n:
+                _ = priority_queue.get()
         
-        length = len(similar_users)
-        logging.info(f"Found {length} similar users to {steamid}. Returning {min(n, length)}.")
-        return similar_users[:min(n, length)]
+        logging.info(f"Found relevant similar users.")
+        return self.player_similarities_from_priority_queue(priority_queue)
     
-    def get_top_games_from_similar_users(self, steamid: int, n: int = 10, n_users: int = 20, filter_owned: bool = True):
-        """Gets the rough top n games from similar users
+    def get_user_games(self, steamid: int) -> DataFrame:
+        """Gets the games a user has played
 
         Args:
         ---
         steamid (int): The steamid of the user
-        n (int, optional): The number of games to return. Defaults to 10. -1 for all
-        n_users (int, optional): The number of similar users to use. Defaults to 20.
 
         Returns:
         ---
-        list: A list of tuples (appid, similarity)
+        DataFrame: The games the user has played
         """
-        similar_users = self.get_similar_users(steamid, n_users)
-        logging.info(f"Getting top {n} games from top {n_users} similar users to {steamid}. Please wait...")
-        
-        games = {}
-        for similar_user in similar_users:
-            user_games = self.data.loc[self.data["steamid"] == similar_user[0]]
-            for idx, row in user_games.iterrows():
-                _, appid, pseudorating = row
-                if filter_owned and self.rating(steamid, appid) > 0:
-                    continue
-                if not appid in games:
-                    games[appid] = 0
-                games[appid] += pseudorating * similar_user[1]
-        
-        games = [(int(appid), score) for appid, score in games.items()]
-        games.sort(key=lambda x: x[1], reverse=True)
-        
-        length = len(games)
-        logging.info(f"Found {length} games from top {n_users} similar users to {steamid}. Returning {length if n == -1 else min(n, length)}.")
-        return games if n == -1 else games[:n]
+        user_games = self.data.loc[self.data["steamid"] == steamid]
+        user_games.reset_index(drop=True, inplace=True)
+        return user_games
 
         
 class RecommenderSystemBase(ABC):
@@ -250,7 +253,6 @@ class RecommenderSystemBase(ABC):
         ---
         DataFrame: appid -> score, ordered by score, up to n items
         """
-        # self.validate_data(data)
         self.validate_steamid(steamid)
         self.validate_n(n)
     
@@ -268,9 +270,10 @@ class RecommenderSystemBase(ABC):
         recommendations = []
         while not priority_queue.empty():
             score, appid = priority_queue.get()
-            recommendations.append({"appid": appid, "score": score})
-        # we reverse the list to get the right order
-        recommendations = pd.DataFrame(reversed(recommendations))
+            recommendations.append((appid, score))
+        recommendations = pd.DataFrame(reversed(recommendations),
+                                       columns=["appid", "score"],
+                                       dtype=object)
         return recommendations
 
     def validate_steamid(self, steamid: int):
@@ -329,29 +332,48 @@ class TagBasedRecommenderSystem(RecommenderSystemBase):
             raise ValueError("data must have a 'priority' column.  Make sure you're using the 'game_tags.csv' file data")
 
 class PlaytimeBasedRecommenderSystem(RecommenderSystemBase):
-    def __init__(self, playtime_normalizer: PlaytimeNormalizerBase):
+    def __init__(self, playergamesplaytimedata: PlayerGamesPlaytimeData):
         super().__init__()
-        self.playtime_normalizer = playtime_normalizer
+        self.playergamesplaytimedata = playergamesplaytimedata
     
-    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
-        super().recommend(data, steamid, n)
-        self.validate_data(data)
-        # Since this one is PlaytimeBased, we're going to use the 'game_tags.csv' file
-        # The structure for this file is:
-        # "appid","tagid","priority"
-        # Priority is a number between 0 and 1, where 1 is the most important tag
-        # We're going to use the priority as a weight for the tags
-        # We're going to use the playtime_forever as a weight for the games
-        # We're going to use the tags as a weight for the recommendations
+    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True, n_users: int = 20) -> DataFrame:
+        # super().recommend(data, steamid, n)
+        # self.validate_data(data)
+        """Gets the rough top n games from similar users
 
-        # First, we need to normalize the playtime_forever column
-        data = self.playtime_normalizer.normalize(data)
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+        n_users (int, optional): The number of similar users to use. Defaults to 20.
+
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        similar_users = self.playergamesplaytimedata.get_similar_users(steamid, n_users)
+        logging.info(f"Getting top {n} games from top {n_users} similar users to {steamid}. Please wait...")
         
-        # Then, we need to get the tags for the games the user has played
-        # We're going to use the 'appid' column to get the tags
-        # We're going to use the 'playtime_forever' column to get the weight for the tags
-        # We're going to use the 'priority' column to get the weight for the tags
-    
+        games = {}
+        for idx, row in similar_users.iterrows():
+            other_steamid, similarity = row
+            other_steamid = int(other_steamid)
+            user_games = self.playergamesplaytimedata.get_user_games(other_steamid)
+            for idx, row in user_games.iterrows():
+                _, appid, pseudorating = row
+                appid = int(appid)
+                if filter_owned and self.playergamesplaytimedata.rating(steamid, appid) > 0:
+                    continue
+                if not appid in games:
+                    games[appid] = 0
+                games[appid] += pseudorating * similarity
+
+        priority_queue = PriorityQueue(n + 1)
+        for appid, score in games.items():
+            priority_queue.put((score, appid))
+            if priority_queue.qsize() > n:
+                _ = priority_queue.get()
+        return self.recommendations_from_priority_queue(priority_queue)
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):

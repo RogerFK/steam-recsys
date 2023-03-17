@@ -17,7 +17,7 @@ class RecommenderDataBase(ABC):
         self.data = None
         try:
             with open(f"bin_data/{pickle_filename}.pickle", "rb") as f:
-                logging.info("Loading data...")
+                logging.info(f"Loading data for {self.__class__.__name__}...")
                 self.processed_data = pickle.load(f)
                 self.data = self.processed_data["data"]
                 logging.info(f"Loaded data from {f.name}")
@@ -34,13 +34,17 @@ class RecommenderDataBase(ABC):
         return self.data[key]
     
     @abstractmethod
-    def rating(self, item, *args, **kwargs):
+    def rating(self, *args, **kwargs):
         """
-        Gets the rating/score, item type and arguments are dependant on subclasses.
-
+        Arguments are dependant on subclasses.
+        -----
+        Description:
+        ---
+        Gets the rating/score
+        
         Args:
         ---
-        item (Any): Dependant on the 'RecommenderData' type. An exception should be thrown if the parameter is invalid.
+        Dependant on subclasses.
 
         Returns:
         ---
@@ -56,6 +60,13 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
     def __init__(self, filename: str, playtime_normalizer: PlaytimeNormalizerBase, threshold=0.4, num_perm=128, num_part=32):
         if not os.path.exists("bin_data/PGPTData"):
             os.makedirs("bin_data/PGPTData")
+            # make small readme
+            with open("bin_data/PGPTData/README.txt", "w") as f:
+                f.write("This folder contains the processed data for the PlayerGamesPlaytimeData class.\n"+
+                        "The files are pickled dictionaries with the keys 'lshensemble' and 'data'.\n"+
+                        "The 'lshensemble' key contains the MinHashLSHEnsemble object used to find similar users, and the 'data' key contains the processed data.\n\n"+
+                        "These are automatically generated when the class is first loaded. Delete to regenerate.\n\n"+
+                        "The filename contains the normalizer, approach to normalize, threshold, number of permutations and number of partitions for the MinHash LSH Ensemble.\n")
         pickle_name = self.pickle_name_fmt.format(str(playtime_normalizer), threshold, num_perm, num_part)
         super().__init__(filename, pickle_name)  # load the processed data if it exists
         if self.processed_data is not None:
@@ -73,20 +84,23 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         # http://ekzhu.com/datasketch/lshensemble.html#minhash-lsh-ensemble
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
+        self.minhashes = {}
         logging.info("Computing MinHashes for each user...")
         for steamid, row in self.data.groupby("steamid"):
             # we only want to store the appids, we'll get the playtimes later
             user_games = row["appid"].values
             min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
             min_hash.update_batch(user_games)
-            lsh_ensemble_index.append((steamid, min_hash, len(user_games)))
+            user_games_length = len(user_games)
+            lsh_ensemble_index.append((steamid, min_hash, user_games_length))
+            self.minhashes[steamid] = (min_hash, user_games_length)
         logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
         self.processed_data = {
             "lshensemble": self.lshensemble,
             "data": self.data,
-            "minhashes": {steamid: (min_hash, size) for steamid, min_hash, size in lsh_ensemble_index},
+            "minhashes": self.minhashes,
         }
         with open(f"bin_data/{pickle_name}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
@@ -103,14 +117,32 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
 
-    def rating(self, appid: int, steamid: int) -> float:
+    def rating(self, steamid: int, appid: int) -> float:
+        """
+        Description:
+        ---
+        The rating from a user for a game. 
+        NOTE: You can change this inside a recommender to get different ratings.
+
+        Args:
+        ---
+        * appid (int): the appid of the game
+        * steamid (int): the steamid of the user
+
+        Returns:
+        ---
+        * float: Their rating for the game
+        """
         vals = self.data.loc[(self.data["appid"] == appid) & (self.data["steamid"] == steamid), "playtime_forever"].values
         if len(vals) == 0:
             return 0
         return vals[0]
     
     def similarity(self, steamid: int, other: int) -> float:
-        """Computes the similarity between two users
+        """
+        Description:
+        ---
+        Computes the similarity between two users
 
         Args:
         ---
@@ -121,19 +153,22 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         ---
         float: The similarity between the two users
         """
-        games_played = self.data.loc[self.data["steamid"] == steamid]
+        own_games_played = self.data.loc[self.data["steamid"] == steamid]
         other_games_played = self.data.loc[self.data["steamid"] == other]
+        
         # we only want to compare the games that both users have played
-        games_played = games_played.loc[games_played["appid"].isin(other_games_played["appid"])]
+        own_games_played = own_games_played.loc[own_games_played["appid"].isin(other_games_played["appid"])]
+        
         total_score = 0
-        for idx, row in games_played.iterrows():
-            _, appid, pseudorating = row
-            total_score += self.rating(appid, other) * pseudorating
-        return total_score  # raw score, but don't penalize for having more games in common
+        for idx, row in own_games_played.iterrows():
+            _, appid, own_pseudorating = row
+            total_score += self.rating(other, appid) * own_pseudorating
+        
+        return total_score  # raw score, but don't penalize for having more games
 
 
     def get_similar_users(self, steamid: int, n: int = 10):
-        """Gets n top similar users to a user
+        """Gets n top similar users to a user. Specially useful for collaborative filtering.
 
         Args:
         ---
@@ -145,16 +180,56 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         list: A list of tuples (steamid, similarity)
         """
         min_hash, size = self.minhashes[steamid]
+        
+        logging.debug(f"Querying LSH Ensemble for similar users to {steamid}...")
         rough_similar_users = self.lshensemble.query(min_hash, size)
-        # all of this is copilot's own doing, change for better performance
+        
+        logging.info(f"Finding similar users to {steamid}. Please wait...")
+        # TODO: all of this is copilot's own doing, change with priority queue for better performance
         similar_users = []
         for similar_user in rough_similar_users:
             if similar_user == steamid:
                 continue
             similar_users.append((similar_user, self.similarity(steamid, similar_user)))
         similar_users.sort(key=lambda x: x[1], reverse=True)
-        return similar_users[:n]
         
+        length = len(similar_users)
+        logging.info(f"Found {length} similar users to {steamid}. Returning {min(n, length)}.")
+        return similar_users[:min(n, length)]
+    
+    def get_top_games_from_similar_users(self, steamid: int, n: int = 10, n_users: int = 20, filter_owned: bool = True):
+        """Gets the rough top n games from similar users
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+        n_users (int, optional): The number of similar users to use. Defaults to 20.
+
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        similar_users = self.get_similar_users(steamid, n_users)
+        logging.info(f"Getting top {n} games from top {n_users} similar users to {steamid}. Please wait...")
+        
+        games = {}
+        for similar_user in similar_users:
+            user_games = self.data.loc[self.data["steamid"] == similar_user[0]]
+            for idx, row in user_games.iterrows():
+                _, appid, pseudorating = row
+                if filter_owned and self.rating(steamid, appid) > 0:
+                    continue
+                if not appid in games:
+                    games[appid] = 0
+                games[appid] += pseudorating * similar_user[1]
+        
+        games = [(int(appid), score) for appid, score in games.items()]
+        games.sort(key=lambda x: x[1], reverse=True)
+        
+        length = len(games)
+        logging.info(f"Found {length} games from top {n_users} similar users to {steamid}. Returning {length if n == -1 else min(n, length)}.")
+        return games if n == -1 else games[:n]
 
         
 class RecommenderSystemBase(ABC):

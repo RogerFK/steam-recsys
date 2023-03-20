@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import logging
-from typing import List, Tuple
+from typing import Generator, List, Tuple
 from pandas.core.api import DataFrame
 import pandas as pd
 from normalization import PlaytimeNormalizerBase
@@ -11,7 +11,61 @@ import os
 import math
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 def trivial_hash(x):
-        return x
+    return x
+
+class RecommenderSystemBase(ABC):
+    def __init__(self):
+        pass
+
+    @abstractmethod
+    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
+        """Recommends games to a user
+
+        Args:
+        ---
+         * data (DataFrame): The data to use for the recommendation
+         * steamid (int): The steamid of the user
+         * n (int, optional): The number of recommendations. Defaults to 10.
+
+        Returns:
+        ---
+        DataFrame: appid -> score, ordered by score, up to n items
+        """
+        self.validate_steamid(steamid)
+        self.validate_n(n)
+    
+    def recommendations_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:
+        """Converts a priority queue to a DataFrame, ordered by score, up to n items
+
+        Args:
+        ---
+         * priority_queue (PriorityQueue): The priority queue to convert
+
+        Returns:
+        ---
+        DataFrame: appid -> score, ordered by score
+        """
+        recommendations = []
+        while not priority_queue.empty():
+            score, appid = priority_queue.get()
+            recommendations.append((appid, score))
+        recommendations = pd.DataFrame(reversed(recommendations),
+                                       columns=["appid", "score"],
+                                       dtype=object)
+        return recommendations
+
+    def validate_steamid(self, steamid: int):
+        if not isinstance(steamid, int):
+            raise TypeError("steamid must be an int")
+        if steamid < 76500000000000000:
+            raise ValueError("invalid steamid")
+
+    def validate_n(self, n: int):
+        if not isinstance(n, int):
+            raise TypeError("n must be an int")
+        if n < 1:
+            raise ValueError("n must be positive")
+
 class RecommenderDataBase(ABC):
     def __init__(self, csv_filename: str, pickle_filename: str):
         self.processed_data = None
@@ -51,9 +105,6 @@ class RecommenderDataBase(ABC):
         ---
         float: The rating for a certain item
         """
-        pass
-    @abstractmethod
-    def similarity(self, item1, item2) -> float:
         pass
 
 class PlayerGamesPlaytimeData(RecommenderDataBase):
@@ -166,6 +217,93 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
             total_score += self.rating(other, appid) * own_pseudorating
         
         return total_score  # raw score, but don't penalize for having more games
+    
+    def get_user_games(self, steamid: int) -> DataFrame:
+        """Gets the games a user has played
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+
+        Returns:
+        ---
+        DataFrame: The games the user has played
+        """
+        user_games = self.data.loc[self.data["steamid"] == steamid]
+        user_games.reset_index(drop=True, inplace=True)
+        return user_games
+    
+    def get_lsh_similar_users(self, steamid: int) -> Generator[int, None, None]:
+        """Gets all similar users beyond the threshold. Specially useful for collaborative filtering.
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+
+        Returns:
+        ---
+        list: A list of tuples (steamid, similarity)
+        """
+        min_hash, size = self.minhashes[steamid]
+        
+        logging.debug(f"Querying LSH Ensemble for similar users to {steamid}...")
+        return self.lshensemble.query(min_hash, size)
+
+## Similarity ##
+class SimilarityBase(ABC):
+    @abstractmethod
+    def similarity(self, item1: int, item2: int) -> float:
+        """
+        Description:
+        ---
+        Computes the similarity between two items.
+
+        Args:
+        ---
+        item1 (int): The first item
+        item2 (int): The second item
+
+        Returns:
+        ---
+        float: The similarity between the two items
+        """
+        pass
+class UserSimilarityBase(SimilarityBase):
+    def __init__(self, pgdata: PlayerGamesPlaytimeData) -> None:
+        super(UserSimilarityBase).__init__()
+        self.pgdata = pgdata
+
+    def similarity(self, steamid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the raw similarity between two users, only taking into account total normalized playtime.
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        other (int): The steamid of the user to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two users
+        """
+        # check if pgdata is set
+        if self.pgdata is None:
+            raise ValueError("pgdata must be set to use this similarity function")
+
+        own_games_played = self.pgdata.get_user_games(steamid)
+        other_games_played = self.pgdata.get_user_games(other)
+        
+        # we only want to compare the games that both users have played
+        own_games_played = own_games_played.loc[own_games_played["appid"].isin(other_games_played["appid"])]
+        
+        total_score = 0
+        for idx, row in own_games_played.iterrows():
+            _, appid, own_pseudorating = row
+            total_score += self.pgdata.rating(other, appid) * own_pseudorating
+        
+        return total_score  # raw score, but don't penalize for having more games
 
     def player_similarities_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:
         """Gets the similarities from a priority queue
@@ -200,14 +338,10 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         ---
         list: A list of tuples (steamid, similarity)
         """
-        min_hash, size = self.minhashes[steamid]
-        
-        logging.debug(f"Querying LSH Ensemble for similar users to {steamid}...")
-        rough_similar_users = self.lshensemble.query(min_hash, size)
+        rough_similar_users = self.pgdata.get_lsh_similar_users(steamid)
         
         logging.info(f"Finding similar users to {steamid}. Please wait...")
         priority_queue = PriorityQueue(n + 1)
-        # TODO: Parallelize this loop for faster results
         for similar_user in rough_similar_users:
             if similar_user == steamid:
                 continue
@@ -218,82 +352,13 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         
         logging.info(f"Found relevant similar users.")
         return self.player_similarities_from_priority_queue(priority_queue)
-    
-    def get_user_games(self, steamid: int) -> DataFrame:
-        """Gets the games a user has played
-
-        Args:
-        ---
-        steamid (int): The steamid of the user
-
-        Returns:
-        ---
-        DataFrame: The games the user has played
-        """
-        user_games = self.data.loc[self.data["steamid"] == steamid]
-        user_games.reset_index(drop=True, inplace=True)
-        return user_games
-
-        
-class RecommenderSystemBase(ABC):
-    def __init__(self):
-        pass
-
-    @abstractmethod
-    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
-        """Recommends games to a user
-
-        Args:
-        ---
-         * data (DataFrame): The data to use for the recommendation
-         * steamid (int): The steamid of the user
-         * n (int, optional): The number of recommendations. Defaults to 10.
-
-        Returns:
-        ---
-        DataFrame: appid -> score, ordered by score, up to n items
-        """
-        self.validate_steamid(steamid)
-        self.validate_n(n)
-    
-    def recommendations_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:
-        """Converts a priority queue to a DataFrame, ordered by score, up to n items
-
-        Args:
-        ---
-         * priority_queue (PriorityQueue): The priority queue to convert
-
-        Returns:
-        ---
-        DataFrame: appid -> score, ordered by score
-        """
-        recommendations = []
-        while not priority_queue.empty():
-            score, appid = priority_queue.get()
-            recommendations.append((appid, score))
-        recommendations = pd.DataFrame(reversed(recommendations),
-                                       columns=["appid", "score"],
-                                       dtype=object)
-        return recommendations
-
-    def validate_steamid(self, steamid: int):
-        if not isinstance(steamid, int):
-            raise TypeError("steamid must be an int")
-        if steamid < 76500000000000000:
-            raise ValueError("invalid steamid")
-
-    def validate_n(self, n: int):
-        if not isinstance(n, int):
-            raise TypeError("n must be an int")
-        if n < 1:
-            raise ValueError("n must be positive")
 
 class RandomRecommenderSystem(RecommenderSystemBase):
     def __init__(self, csv_filename: str = "data/appids.csv"):
         super().__init__()
         self.data = pd.read_csv(csv_filename)
 
-    def recommend(self, steamid: int, n: int = 10) -> DataFrame:
+    def recommend(self, steamid: int = 0, n: int = 10) -> DataFrame:
         import random
         # it's ordered by (priority, appid), from lower to upper
         # when the priority queue is full, it will pop the lowest priority
@@ -332,9 +397,10 @@ class TagBasedRecommenderSystem(RecommenderSystemBase):
             raise ValueError("data must have a 'priority' column.  Make sure you're using the 'game_tags.csv' file data")
 
 class PlaytimeBasedRecommenderSystem(RecommenderSystemBase):
-    def __init__(self, playergamesplaytimedata: PlayerGamesPlaytimeData):
+    def __init__(self, playergamesplaytimedata: PlayerGamesPlaytimeData, similarity: UserSimilarityBase):
         super().__init__()
         self.playergamesplaytimedata = playergamesplaytimedata
+        self.similarity = similarity
     
     def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True, n_users: int = 20) -> DataFrame:
         # super().recommend(data, steamid, n)
@@ -351,7 +417,7 @@ class PlaytimeBasedRecommenderSystem(RecommenderSystemBase):
         ---
         list: A list of tuples (appid, similarity)
         """
-        similar_users = self.playergamesplaytimedata.get_similar_users(steamid, n_users)
+        similar_users = self.similarity.get_similar_users(steamid, n_users)
         logging.info(f"Getting top {n} games from top {n_users} similar users to {steamid}. Please wait...")
         
         games = {}

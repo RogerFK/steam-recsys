@@ -9,6 +9,9 @@ from queue import PriorityQueue
 import pickle
 import os
 import math
+import numpy as np
+import atexit
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 def trivial_hash(x):
     return x
@@ -72,10 +75,10 @@ class AbstractRecommenderData(ABC):
         self.data = None
         try:
             with open(f"bin_data/{pickle_filename}.pickle", "rb") as f:
-                logging.info(f"Loading data for {self.__class__.__name__}...")
+                logging.info(f"Loading pickled data for {self.__class__.__name__}...")
                 self.processed_data = pickle.load(f)
                 self.data = self.processed_data["data"]
-                logging.info(f"Loaded data from {f.name}")
+                logging.info(f"Loaded pickled data from {f.name}")
                 return
         except FileNotFoundError:
             try:
@@ -190,34 +193,6 @@ class PlayerGamesPlaytimeData(AbstractRecommenderData):
             return 0
         return vals[0]
     
-    def similarity(self, steamid: int, other: int) -> float:
-        """
-        Description:
-        ---
-        Computes the similarity between two users
-
-        Args:
-        ---
-        steamid (int): The steamid of the user
-        other (int): The steamid of the user to compare to
-
-        Returns:
-        ---
-        float: The similarity between the two users
-        """
-        own_games_played = self.data.loc[self.data["steamid"] == steamid]
-        other_games_played = self.data.loc[self.data["steamid"] == other]
-        
-        # we only want to compare the games that both users have played
-        own_games_played = own_games_played.loc[own_games_played["appid"].isin(other_games_played["appid"])]
-        
-        total_score = 0
-        for idx, row in own_games_played.iterrows():
-            _, appid, own_pseudorating = row
-            total_score += self.rating(other, appid) * own_pseudorating
-        
-        return total_score  # raw score, but don't penalize for having more games
-    
     def get_user_games(self, steamid: int) -> DataFrame:
         """Gets the games a user has played
 
@@ -242,12 +217,211 @@ class PlayerGamesPlaytimeData(AbstractRecommenderData):
 
         Returns:
         ---
-        list: A list of tuples (steamid, similarity)
+        Generator[int, None, None]: A list of steamids
         """
         min_hash, size = self.minhashes[steamid]
         
         logging.debug(f"Querying LSH Ensemble for similar users to {steamid}...")
         return self.lshensemble.query(min_hash, size)
+
+    def get_all_user_games(self) -> Generator[DataFrame, None, None]:
+        """Gets all the games for all users
+
+        Returns:
+        ---
+        Generator[DataFrame, None, None]: A generator of DataFrames containing all the games for each user
+        """
+        for steamid, user_games in self.data.groupby("steamid"):
+            user_games.reset_index(drop=True, inplace=True)
+            yield steamid, user_games
+
+class GameTagsData(AbstractRecommenderData):
+    def __init__(self, csv_filename: str = "game_tags.csv", threshold=0.8, num_perm=128, num_part=32) -> None:
+        """
+        Description:
+        ---
+        Loads the game tags data from a file.
+
+        Args:
+        ---
+        filename (str): The filename of the game tags data. Defaults to "game_tags.csv".
+        """
+        super().__init__(csv_filename, pickle_filename="game_tags")
+        self.validate_data(self.data)
+        self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
+        lsh_ensemble_index = []
+        self.minhashes = {}
+        logging.info("Computing MinHashes for each game...")
+        for appid, row in self.data.groupby("appid"):
+            # we only want to store the appids, we'll get the weights later
+            game_tags = row["tagid"].values
+            min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
+            min_hash.update_batch(game_tags)
+            game_tags_length = len(game_tags)
+            lsh_ensemble_index.append((appid, min_hash, game_tags_length))
+            self.minhashes[appid] = (min_hash, game_tags_length)
+        logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
+        self.lshensemble.index(lsh_ensemble_index)
+        logging.info("MinHashLSHEnsemble index computed.")
+        self.processed_data = {
+            "lshensemble": self.lshensemble,
+            "data": self.data,
+            "minhashes": self.minhashes,
+        }
+        with open(f"bin_data/game_tags.pickle", "wb") as f:
+            logging.info("Dumping LSH Ensemble and data...")
+            pickle.dump(self.processed_data, f)
+            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+    
+    
+    def validate_data(self, data: DataFrame):
+        if not isinstance(data, DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
+        if not "appid" in data.columns:
+            raise ValueError("data must have a 'appid' column")
+        if not "tagid" in data.columns:
+            raise ValueError("data must have a 'tagid' column")
+        if not "weight" in data.columns:
+            raise ValueError("data must have a 'weight' column")
+    
+    def rating(self, appid, tagid) -> float:
+        """
+        Description:
+        ---
+        The rating from a user for a game. 
+        NOTE: You can change this inside a recommender to get different ratings.
+
+        Args:
+        ---
+        * appid (int): the appid of the game
+        * tagid (int): the tagid of the tag
+
+        Returns:
+        ---
+        * float: Their rating for the game
+        """
+        vals = self.data.loc[(self.data["appid"] == appid) & (self.data["tagid"] == tagid), "weight"].values
+        if len(vals) == 0:
+            return 0
+        return vals[0]
+    
+    def get_lsh_similar_games(self, appid: int) -> Generator[int, None, None]:
+        """Gets all similar games beyond the threshold set in the constructor.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Generator[int, None, None]: A list of appids
+        """
+        min_hash, size = self.minhashes[appid]
+
+        logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
+        return self.lshensemble.query(min_hash, size)
+    
+    def get_game_tags(self, appid: int) -> DataFrame:
+        """Gets the tags a game has.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        DataFrame: The tags the game has
+        """
+        game_tags = self.data.loc[self.data["appid"] == appid]
+        game_tags.reset_index(drop=True, inplace=True)
+        return game_tags
+
+# this class below is the same as GameTagsData but uses game_genres.csv instead
+class GameGenresData(AbstractRecommenderData):
+    def __init__(self, csv_filename: str):
+        super().__init__(csv_filename, "game_genres")
+        self.validate_data(self.data)
+        self.lshensemble = MinHashLSHEnsemble(threshold=0.8, num_perm=128, num_part=32)
+        lsh_ensemble_index = []
+        self.minhashes = {}
+        logging.info("Computing MinHashes for each game...")
+        for appid, row in self.data.groupby("appid"):
+            game_genres = row["genreid"].values
+            min_hash = MinHash(num_perm=128, hashfunc=trivial_hash)
+            min_hash.update_batch(game_genres)
+            game_genres_length = len(game_genres)
+            lsh_ensemble_index.append((appid, min_hash, game_genres_length))
+            self.minhashes[appid] = (min_hash, game_genres_length)
+        logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
+        self.lshensemble.index(lsh_ensemble_index)
+        logging.info("MinHashLSHEnsemble index computed.")
+        self.processed_data = {
+            "lshensemble": self.lshensemble,
+            "data": self.data,
+            "minhashes": self.minhashes,
+        }
+        with open(f"bin_data/game_genres.pickle", "wb") as f:
+            logging.info("Dumping LSH Ensemble and data...")
+            pickle.dump(self.processed_data, f)
+            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+    
+    def validate_data(self, data: DataFrame):
+        if not isinstance(data, DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
+        if not "appid" in data.columns:
+            raise ValueError("data must have a 'appid' column")
+        if not "genreid" in data.columns:
+            raise ValueError("data must have a 'genreid' column")
+    
+    def rating(self, appid, genreid) -> float:
+        """
+        Description:
+        ---
+        If a game has a genre, it is rated 1.0, otherwise 0.0.
+
+        Args:
+        ---
+        * appid (int): the appid of the game
+        * genreid (int): the genreid of the genre
+
+        Returns:
+        ---
+        * float: Their rating for the game
+        """
+        vals = self.data.loc[(self.data["appid"] == appid) & (self.data["genreid"] == genreid)].values
+        return 0.0 if len(vals) == 0 else 1.0
+    
+    def get_lsh_similar_games(self, appid: int) -> Generator[int, None, None]:
+        """Gets all similar games beyond the threshold set in the constructor.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Generator[int, None, None]: A list of appids
+        """
+        min_hash, size = self.minhashes[appid]
+
+        logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
+        return self.lshensemble.query(min_hash, size)
+    
+    def get_game_genres(self, appid: int) -> DataFrame:
+        """Gets the genres a game has.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        DataFrame: The genres the game has
+        """
+        game_genres = self.data.loc[self.data["appid"] == appid]
+        game_genres.reset_index(drop=True, inplace=True)
+        return game_genres
+        
 
 ## Similarity ##
 class AbstractSimilarity(ABC):
@@ -353,6 +527,79 @@ class RawUserSimilarity(AbstractSimilarity):
         logging.info(f"Found relevant similar users.")
         return self.player_similarities_from_priority_queue(priority_queue)
 
+class CosineUserSimilarity(RawUserSimilarity):
+    def __init__(self, pgdata: PlayerGamesPlaytimeData, precompute: bool = True) -> None:
+        super().__init__(pgdata)
+        self.precomputed = precompute
+        if precompute:
+            # Check if there's pickled data in bin_data\cosine_user_norms.pickle
+            if os.path.exists("bin_data/cosine_user_norms.pickle"):
+                with open("bin_data/cosine_user_norms.pickle", "rb") as f:
+                    self.norms = pickle.load(f)
+            else:
+                # Precompute the norms of the users
+                self.norms = {}
+                for steamid, user_games in self.pgdata.get_all_user_games():
+                    # it's just the sum of the squares of the ratings
+                    self.norms[steamid] = np.sum(user_games["playtime_forever"] ** 2)
+                with open("bin_data/cosine_user_norms.pickle", "wb") as f:
+                    pickle.dump(self.norms, f)
+        else:
+            self.norms = {}
+            atexit.register(self.save_norms)
+    
+    def save_norms(self):
+        with open("bin_data/cosine_user_norms.pickle", "wb") as f:
+            logging.info("Saving cosine user norms...")
+            pickle.dump(self.norms, f)
+    
+    def similarity(self, steamid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the cosine similarity between two users, only taking into account total normalized playtime.
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        other (int): The steamid of the user to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two users
+        """
+        if self.precomputed:
+            return super().similarity(steamid, other) / (self.norms[steamid] * self.norms[other]) ** 0.5
+        # check if pgdata is set
+        if self.pgdata is None:
+            raise ValueError("pgdata must be set to use this similarity function")
+
+        own_games_played = self.pgdata.get_user_games(steamid)
+        other_games_played = self.pgdata.get_user_games(other)
+        
+        games_to_iterate = own_games_played.join(other_games_played)
+        total_score = 0
+        own_total_score = 0 if not steamid in self.norms else self.norms[steamid]
+        other_total_score = 0 if not other in self.norms else self.norms[other]
+        
+        for idx, row in games_to_iterate.iterrows():
+            sid, appid, own_pseudorating = row
+            if sid == steamid:
+                other_pseudorating = self.pgdata.rating(other, appid)
+            else:
+                other_pseudorating = own_pseudorating
+                own_pseudorating = self.pgdata.rating(steamid, appid)
+            total_score += other_pseudorating * own_pseudorating
+            if not self.precomputed:
+                own_total_score += own_pseudorating ** 2
+                other_total_score += other_pseudorating ** 2
+        
+        if steamid not in self.norms:
+            self.norms[steamid] = own_total_score
+        if other not in self.norms:
+            self.norms[other] = other_total_score
+        return total_score / (math.sqrt(own_total_score) * math.sqrt(other_total_score))
+
 class RandomRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, csv_filename: str = "data/appids.csv"):
         super().__init__()
@@ -379,13 +626,6 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
         super().__init__()
         self.tags = pd.read_csv(tags_file).groupby("appid")
 
-    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
-        super().recommend(data, steamid, n)
-        # Since this one is TagBased, we're going to use the 'game_tags.csv' file
-        # The structure for this file is:
-        # "appid","tagid","priority"
-        self.validate_data(data)
-    
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
             raise TypeError("data must be a pandas DataFrame")
@@ -396,10 +636,18 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
         if not "priority" in data.columns:
             raise ValueError("data must have a 'priority' column.  Make sure you're using the 'game_tags.csv' file data")
 
+    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
+        super().recommend(data, steamid, n)
+        # Since this one is TagBased, we're going to use the 'game_tags.csv' file
+        # The structure for this file is:
+        # "appid","tagid","priority"
+        self.validate_data(data)
+    
+
 class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
-    def __init__(self, playergamesplaytimedata: PlayerGamesPlaytimeData, similarity: RawUserSimilarity):
+    def __init__(self, pgdata: PlayerGamesPlaytimeData, similarity: RawUserSimilarity):
         super().__init__()
-        self.playergamesplaytimedata = playergamesplaytimedata
+        self.pgdata = pgdata
         self.similarity = similarity
     
     def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True, n_users: int = 20) -> DataFrame:
@@ -424,11 +672,11 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         for idx, row in similar_users.iterrows():
             other_steamid, similarity = row
             other_steamid = int(other_steamid)
-            user_games = self.playergamesplaytimedata.get_user_games(other_steamid)
+            user_games = self.pgdata.get_user_games(other_steamid)
             for idx, row in user_games.iterrows():
                 _, appid, pseudorating = row
                 appid = int(appid)
-                if filter_owned and self.playergamesplaytimedata.rating(steamid, appid) > 0:
+                if filter_owned and self.pgdata.rating(steamid, appid) > 0:
                     continue
                 if not appid in games:
                     games[appid] = 0

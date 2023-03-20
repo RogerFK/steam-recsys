@@ -3,7 +3,7 @@ import logging
 from typing import Generator, List, Tuple
 from pandas.core.api import DataFrame
 import pandas as pd
-from normalization import PlaytimeNormalizerBase
+from normalization import AbstractPlaytimeNormalizer
 from datasketch import MinHash, MinHashLSH, MinHashLSHEnsemble
 from queue import PriorityQueue
 import pickle
@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 def trivial_hash(x):
     return x
 
-class RecommenderSystemBase(ABC):
+class AbstractRecommenderSystem(ABC):
     def __init__(self):
         pass
 
@@ -66,7 +66,7 @@ class RecommenderSystemBase(ABC):
         if n < 1:
             raise ValueError("n must be positive")
 
-class RecommenderDataBase(ABC):
+class AbstractRecommenderData(ABC):
     def __init__(self, csv_filename: str, pickle_filename: str):
         self.processed_data = None
         self.data = None
@@ -107,9 +107,9 @@ class RecommenderDataBase(ABC):
         """
         pass
 
-class PlayerGamesPlaytimeData(RecommenderDataBase):
+class PlayerGamesPlaytimeData(AbstractRecommenderData):
     pickle_name_fmt = "PGPTData/{}_thres{}_per{}par{}"
-    def __init__(self, filename: str, playtime_normalizer: PlaytimeNormalizerBase, threshold=0.8, num_perm=128, num_part=32):
+    def __init__(self, filename: str, playtime_normalizer: AbstractPlaytimeNormalizer, threshold=0.8, num_perm=128, num_part=32):
         if not os.path.exists("bin_data/PGPTData"):
             os.makedirs("bin_data/PGPTData")
             # make small readme
@@ -250,7 +250,7 @@ class PlayerGamesPlaytimeData(RecommenderDataBase):
         return self.lshensemble.query(min_hash, size)
 
 ## Similarity ##
-class SimilarityBase(ABC):
+class AbstractSimilarity(ABC):
     @abstractmethod
     def similarity(self, item1: int, item2: int) -> float:
         """
@@ -268,9 +268,9 @@ class SimilarityBase(ABC):
         float: The similarity between the two items
         """
         pass
-class UserSimilarityBase(SimilarityBase):
+class RawUserSimilarity(AbstractSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytimeData) -> None:
-        super(UserSimilarityBase).__init__()
+        super(RawUserSimilarity).__init__()
         self.pgdata = pgdata
 
     def similarity(self, steamid: int, other: int) -> float:
@@ -353,7 +353,7 @@ class UserSimilarityBase(SimilarityBase):
         logging.info(f"Found relevant similar users.")
         return self.player_similarities_from_priority_queue(priority_queue)
 
-class RandomRecommenderSystem(RecommenderSystemBase):
+class RandomRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, csv_filename: str = "data/appids.csv"):
         super().__init__()
         self.data = pd.read_csv(csv_filename)
@@ -374,7 +374,7 @@ class RandomRecommenderSystem(RecommenderSystemBase):
 
         return self.recommendations_from_priority_queue(priority_queue)
 
-class TagBasedRecommenderSystem(RecommenderSystemBase):
+class TagBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, tags_file: str):
         super().__init__()
         self.tags = pd.read_csv(tags_file).groupby("appid")
@@ -396,8 +396,8 @@ class TagBasedRecommenderSystem(RecommenderSystemBase):
         if not "priority" in data.columns:
             raise ValueError("data must have a 'priority' column.  Make sure you're using the 'game_tags.csv' file data")
 
-class PlaytimeBasedRecommenderSystem(RecommenderSystemBase):
-    def __init__(self, playergamesplaytimedata: PlayerGamesPlaytimeData, similarity: UserSimilarityBase):
+class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
+    def __init__(self, playergamesplaytimedata: PlayerGamesPlaytimeData, similarity: RawUserSimilarity):
         super().__init__()
         self.playergamesplaytimedata = playergamesplaytimedata
         self.similarity = similarity

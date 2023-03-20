@@ -7,7 +7,7 @@ from normalization import *
 steamid = 76561197960269908
 rand = RandomRecommenderSystem()
 pgdata = PlayerGamesPlaytimeData('data/player_games_subset.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
-user_sim = UserSimilarityBase(pgdata)
+user_sim = RawUserSimilarity(pgdata)
 pbr = PlaytimeBasedRecommenderSystem(pgdata, user_sim)
 pbr_recommendations = pbr.recommend(steamid, n=10, n_users=40)
 print("\n\nAvailable data: pgdata (PlayerGamesPlaytimeData), rand (RandomRecommenderSystem), pbr (PlaytimeBasedRecommenderSystem)")

@@ -7,7 +7,7 @@ import pandas.core.groupby as pdg
 # import GroupBy
 from pandas.core.groupby.groupby import GroupBy
 
-class PlaytimeNormalizerBase(ABC):
+class AbstractPlaytimeNormalizer(ABC):
     def __init__(self, denominator_function: str, playtime_approach: str = "minutes_always_more_than_60", output_multiplier: int = 5, inplace: bool = False):
         self.inplace = inplace
         self.denominator_function = denominator_function
@@ -87,19 +87,19 @@ class PlaytimeNormalizerBase(ABC):
         return name + f"_{self.denominator_function}"
     
 
-class LinearPlaytimeNormalizer(PlaytimeNormalizerBase):
+class LinearPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     """Normalizes the player_games data using the playtime_forever
     """
     def normalize_value(self, playtime, denominator):
         return playtime / denominator
 
-class LogPlaytimeNormalizer(PlaytimeNormalizerBase):
+class LogPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     """Normalizes the player_games data using the log of the playtime_forever
     """
     def normalize_value(self, playtime, denominator):
         return np.log(playtime) / np.log(denominator)
 
-class RootPlaytimeNormalizer(PlaytimeNormalizerBase):
+class RootPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     """Normalizes the player_games data using the N root of the playtime_forever
     """
     def __init__(self, denominator_function: str, playtime_approach: str = "minutes_always_more_than_60", nroot: int = 2, output_multiplier: int = 5, inplace: bool = False):

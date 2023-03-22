@@ -4,6 +4,7 @@ from pandas.core.api import DataFrame
 import numpy as np
 import math
 import pandas.core.groupby as pdg
+import re
 # import GroupBy
 from pandas.core.groupby.groupby import GroupBy
 
@@ -59,7 +60,7 @@ class AbstractPlaytimeNormalizer(ABC):
             max_denominators = data.groupby("steamid")["playtime_forever"].max()
             # now multiply every sum by the max denominator
             for steamid, denominator in max_denominators.items():
-                denominators[steamid] *= denominator
+                denominators[steamid] *= (denominator / denominators[steamid])
         elif self.denominator_function == "median":
             denominators = data.groupby("steamid")["playtime_forever"].median()
         else:
@@ -80,12 +81,14 @@ class AbstractPlaytimeNormalizer(ABC):
         # check if the data has the correct types
         if not all([data[col].dtype == "int64" for col in ["steamid", "appid"]]):
             raise ValueError("The DataFrame must have the columns 'steamid' and 'appid' as integer values.")
-    
-    def __str__(self) -> str:
+
+    def __repr__(self) -> str:
         name = self.__class__.__name__
         name = name[0:name.index("PlaytimeNormalizer")] + "PN"
-        return name + f"_{self.denominator_function}"
+        return name + f"_{self.denominator_function}" + "".join([tok[0] for tok in re.findall(r"[a-zA-Z]+|[0-9]", self.playtime_approach)]) + f"_{self.output_multiplier}x"
     
+    def __str__(self) -> str:
+        return self.__repr__()
 
 class LinearPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     """Normalizes the player_games data using the playtime_forever

@@ -164,5 +164,5 @@ cython_debug/
 
 # Specific to this project
 test_output/
-bin_data/
+*pickle
 data/

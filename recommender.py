@@ -679,7 +679,7 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         return set(game_publishers["publisherid"].values)
 
 class GameDetails(AbstractRecommenderData):
-    class Game:
+    class SingleGameDetails:
         def __init__(self, game_details_row):
             self.appid = game_details_row["appid"]
             self.name = game_details_row["name"]
@@ -718,7 +718,9 @@ class GameDetails(AbstractRecommenderData):
                     missing.append(col)
             raise ValueError("Missing columns: " + ", ".join(missing) + err_str)
     
-    def get_game(self, appid) -> Game:
+    def get_game_row(self, appid: int): return self.data.loc[appid]
+
+    def get_game(self, appid: int) -> SingleGameDetails:
         """
         Description:
         ---
@@ -732,9 +734,9 @@ class GameDetails(AbstractRecommenderData):
         ---
         * Game: The Game object for the game
         """
-        return self.Game(self.data.loc[appid])
+        return self.SingleGameDetails(self.data.loc[appid])
     
-    def rating(self, appid) -> float:
+    def rating(self, appid: int) -> float:
         """
         Description:
         ---
@@ -789,6 +791,28 @@ class GameInfo():
         self.game_genres = game_genres
         self.game_tags = game_tags
     
+    def _get_game_from_row(self, row) -> Game:
+        """
+        Description:
+        ---
+        Gets a Game object from a row of the game details CSV.
+
+        Args:
+        ---
+        * row (pandas.Series): a row from the game details CSV
+
+        Returns:
+        ---
+        * Game: The Game object for the game
+        """
+        appid = row["appid"]
+        game_categories = self.game_categories.get_categories(appid)
+        game_developers = self.game_developers_publishers.get_developers(appid)
+        game_publishers = self.game_developers_publishers.get_publishers(appid)
+        game_genres = self.game_genres.get_genres(appid)
+        game_tags = self.game_tags.get_tags(appid)
+        return Game(row, game_categories, game_developers, game_publishers, game_genres, game_tags)
+    
     def get_game(self, appid) -> Game:
         """
         Description:
@@ -803,13 +827,36 @@ class GameInfo():
         ---
         * Game: The Game object for the game
         """
-        game_details_row = self.game_details.data.loc[appid]
-        game_categories = self.game_categories.get_categories(appid)
-        game_developers = self.game_developers_publishers.get_developers(appid)
-        game_publishers = self.game_developers_publishers.get_publishers(appid)
-        game_genres = self.game_genres.get_genres(appid)
-        game_tags = self.game_tags.get_tags(appid)
-        return Game(game_details_row, game_categories, game_developers, game_publishers, game_genres, game_tags)
+        game_details_row = self.game_details.get_game_row(appid)
+        return self._get_game_from_row(game_details_row)
+    
+    def get_games(self, appids: List[int]) -> List[Game]:
+        """
+        Description:
+        ---
+        Gets a list of Game objects for a list of appids.
+
+        Args:
+        ---
+        * appids (List[int]): the appids of the games
+
+        Returns:
+        ---
+        * List[Game]: The Game objects for the games
+        """
+        return [self.get_game(appid) for appid in appids]
+
+    def get_all_games(self) -> List[Game]:
+        """
+        Description:
+        ---
+        Gets a list of all Game objects.
+
+        Returns:
+        ---
+        * List[Game]: The Game objects for all games
+        """
+        return [self._get_game_from_row(row) for _, row in self.game_details.data.iterrows()]
 
 ## Similarity ##
 class AbstractSimilarity(ABC):
@@ -1082,6 +1129,288 @@ class PearsonUserSimilarity(RawUserSimilarity):
         denominator = (user_denominator * other_denominator) ** 0.5
         return total_score / denominator if denominator != 0 else 0
 
+class RawGameTagSimilarity(AbstractSimilarity):
+    def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.game_tags = game_tags
+        if self.game_info is None and self.game_tags is None:
+            raise ValueError("game_info or game_tags must be set to use this similarity function")
+
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the similarity between two games, only taking into account the tags.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+
+        if self.game_info is not None:
+            tags = self.game_info.get_game(appid).tags
+            other_tags = self.game_info.get_game(other).tags
+        elif self.game_tags is not None:
+            tags = self.game_tags.get_tags(appid)
+            other_tags = self.game_tags.get_tags(other)
+        # compute the similarity
+        similarity = 0
+        for tagid, weight in tags:
+            if tagid in other_tags:
+                similarity += weight * other_tags[tagid]
+        return similarity
+
+class CosineGameTagSimilarity(AbstractSimilarity):
+    def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.game_tags = game_tags
+        if self.game_info is None and self.game_tags is None:
+            raise ValueError("game_info or game_tags must be set to use this similarity function")
+        # NOTE: We don't need to precompute game tag norms because at most a game has 19 tags
+        # and thus the overhead of accessing the norm through a dictionary is higher than
+        # just computing it on the fly
+
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the cosine similarity between two games, only taking into account the tags.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            tags = self.game_info.get_game(appid).tags
+            other_tags = self.game_info.get_game(other).tags
+        elif self.game_tags is not None:
+            tags = self.game_tags.get_tags(appid)
+            other_tags = self.game_tags.get_tags(other)
+        
+        # compute the similarity
+        similarity = 0
+        own_norm = 0
+        other_norm = 0
+        for tagid, weight in tags:
+            own_norm += weight ** 2
+            if tagid in other_tags:
+                similarity += weight * other_tags[tagid]
+        for tagid, weight in other_tags:
+            other_norm += weight ** 2
+        return similarity / (own_norm * other_norm) ** 0.5
+
+class PearsonGameTagSimilarity(AbstractSimilarity):
+    def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.game_tags = game_tags
+        if self.game_info is None and self.game_tags is None:
+            raise ValueError("game_info or game_tags must be set to use this similarity function")
+        # NOTE: We don't need to precompute game tag norms and means because at most 
+        # a game has 19 tags and thus the overhead of accessing the norm through
+        # a dictionary is higher than just computing it on the fly
+
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the Pearson correlation coefficient between two games, only taking into account the tags.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            tags = self.game_info.get_game(appid).tags
+            other_tags = self.game_info.get_game(other).tags
+        elif self.game_tags is not None:
+            tags = self.game_tags.get_tags(appid)
+            other_tags = self.game_tags.get_tags(other)
+        
+        # compute the similarity
+        similarity = 0
+        own_norm = 0
+        other_norm = 0
+        own_mean = 0
+        other_mean = 0
+        for tagid, weight in tags:
+            own_norm += weight ** 2
+            own_mean += weight
+        for tagid, weight in other_tags:
+            other_norm += weight ** 2
+            other_mean += weight
+        own_mean /= len(tags)
+        other_mean /= len(other_tags)
+        for tagid, weight in tags:
+            if tagid in other_tags:
+                similarity += (weight - own_mean) * (other_tags[tagid] - other_mean)
+        return similarity / (own_norm * other_norm) ** 0.5
+
+class JaccardGameCategorySimilarity(AbstractSimilarity):
+    def __init__(self, game_categories: GameCategories = None, game_info: GameInfo = None) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.game_categories = game_categories
+        if self.game_info is None and self.game_categories is None:
+            raise ValueError("game_info or game_categories must be set to use this similarity function")
+
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the Jaccard similarity between two games, only taking into account the categories.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            categories = self.game_info.get_game(appid).categories
+            other_categories = self.game_info.get_game(other).categories
+        elif self.game_categories is not None:
+            categories = self.game_categories.get_categories(appid)
+            other_categories = self.game_categories.get_categories(other)
+        
+        return len(categories.intersection(other_categories)) / len(categories.union(other_categories))
+
+class JaccardGameGenreSimilarity(AbstractSimilarity):
+    def __init__(self, game_genres: GameGenres = None, game_info: GameInfo = None) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.game_genres = game_genres
+        if self.game_info is None and self.game_genres is None:
+            raise ValueError("game_info or game_genres must be set to use this similarity function")
+
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the Jaccard similarity between two games, only taking into account the genres.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            genres = self.game_info.get_game(appid).genres
+            other_genres = self.game_info.get_game(other).genres
+        elif self.game_genres is not None:
+            genres = self.game_genres.get_genres(appid)
+            other_genres = self.game_genres.get_genres(other)
+        
+        return len(genres.intersection(other_genres)) / len(genres.union(other_genres))
+    
+class JaccardGameDeveloperPublisherSimilarity(AbstractSimilarity):
+    def __init__(self, game_developers_publishers: GameDevelopersPublishers = None, game_info: GameInfo = None) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.game_developers_publishers = game_developers_publishers
+        if self.game_info is None and self.game_developers_publishers is None:
+            raise ValueError("game_info or game_developers_publishers must be set to use this similarity function")
+
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the Jaccard similarity between two games, only taking into account the developers and publishers.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            developers = self.game_info.get_game(appid).developers
+            publishers = self.game_info.get_game(appid).publishers
+            other_developers = self.game_info.get_game(other).developers
+            other_publishers = self.game_info.get_game(other).publishers
+        elif self.game_developers_publishers is not None:
+            developers = self.game_developers_publishers.get_developers(appid)
+            publishers = self.game_developers_publishers.get_publishers(appid)
+            other_developers = self.game_developers_publishers.get_developers(other)
+            other_publishers = self.game_developers_publishers.get_publishers(other)
+        
+        return len(developers.intersection(other_developers)) / len(developers.union(other_developers)) + len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
+    
+    def similarity_dev(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the Jaccard similarity between two games, only taking into account the developers.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            developers = self.game_info.get_game(appid).developers
+            other_developers = self.game_info.get_game(other).developers
+        elif self.game_developers_publishers is not None:
+            developers = self.game_developers_publishers.get_developers(appid)
+            other_developers = self.game_developers_publishers.get_developers(other)
+        
+        return len(developers.intersection(other_developers)) / len(developers.union(other_developers))
+    
+    def similarity_pub(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the Jaccard similarity between two games, only taking into account the publishers.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        if self.game_info is not None:
+            publishers = self.game_info.get_game(appid).publishers
+            other_publishers = self.game_info.get_game(other).publishers
+        elif self.game_developers_publishers is not None:
+            publishers = self.game_developers_publishers.get_publishers(appid)
+            other_publishers = self.game_developers_publishers.get_publishers(other)
+        
+        return len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
+    
 class RawItemSimilarity(AbstractSimilarity):
     def __init__(self, game_info: GameInfo, weight_tags = 1, weight_categories = 1, weight_developers_publishers = 1, weight_genres = 1, weight_details = 1) -> None:
         super().__init__()
@@ -1143,6 +1472,7 @@ class RawItemSimilarity(AbstractSimilarity):
         # TODO: use game.name, game.required_age, game.is_free, game.controller_support, game.has_demo, game.price_usd, game.mac_os, game.positive_reviews, game.negative_reviews, game.total_reviews, game.has_achievements, game.release_date, game.coming_soon
         # NOTE: maybe use a DetailsSimilarity class that can be passed to the constructor
         return 0
+
 
 # Recommender systems #
 class RandomRecommenderSystem(AbstractRecommenderSystem):

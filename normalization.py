@@ -1,15 +1,11 @@
 from abc import ABC, abstractmethod
-import pandas as pd
 from pandas.core.api import DataFrame
 import numpy as np
 import math
-import pandas.core.groupby as pdg
 import re
-# import GroupBy
-from pandas.core.groupby.groupby import GroupBy
-
+import config
 class AbstractPlaytimeNormalizer(ABC):
-    def __init__(self, denominator_function: str, playtime_approach: str = "minutes_always_more_than_60", output_multiplier: int = 5, inplace: bool = False):
+    def __init__(self, denominator_function: str, playtime_approach: str = "minutes_always_more_than_60", output_multiplier: float = config.RATING_MULTIPLIER, inplace: bool = False):
         self.inplace = inplace
         self.denominator_function = denominator_function
         self.playtime_approach = playtime_approach
@@ -51,8 +47,6 @@ class AbstractPlaytimeNormalizer(ABC):
         # also, normalization is usually not the bottleneck, so it doesn't matter
         if self.denominator_function == "max":
             denominators = data.groupby("steamid")["playtime_forever"].max()
-        elif self.denominator_function == "mean":
-            denominators = data.groupby("steamid")["playtime_forever"].mean()
         elif self.denominator_function == "sum":
             denominators = data.groupby("steamid")["playtime_forever"].sum()
         elif self.denominator_function == "sum_max":
@@ -61,10 +55,8 @@ class AbstractPlaytimeNormalizer(ABC):
             # now multiply every sum by the max denominator
             for steamid, denominator in max_denominators.items():
                 denominators[steamid] *= (denominator / denominators[steamid])
-        elif self.denominator_function == "median":
-            denominators = data.groupby("steamid")["playtime_forever"].median()
         else:
-            raise ValueError("divide_by must be either 'max', 'mean', 'sum' or 'median'")
+            raise ValueError("divide_by must be either 'max', 'sum'")
         
         data["playtime_forever"] = data.apply(lambda x: self.output_multiplier * self.normalize_value(x["playtime_forever"], denominators[x["steamid"]]), axis=1)
         return data

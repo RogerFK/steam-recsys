@@ -1,18 +1,18 @@
 from abc import ABC, abstractmethod
 import logging
-from typing import Generator, List, Set, Tuple
+from typing import Dict, Generator, List, Set, Tuple
 from pandas.core.api import DataFrame
 import pandas as pd
 from normalization import AbstractPlaytimeNormalizer
-from datasketch import MinHash, MinHashLSH, MinHashLSHEnsemble
+from datasketch import MinHash, MinHashLSHEnsemble
 from queue import PriorityQueue
 import pickle
 import os
 import math
 import numpy as np
 import atexit
+import config
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 def trivial_hash(x):
     return x
 
@@ -352,7 +352,7 @@ class GameTags(AbstractRecommenderData):
         logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
         return self.lshensemble.query(min_hash, size)
     
-    def get_game_tags(self, appid: int) -> DataFrame:
+    def get_tags(self, appid: int) -> Dict[int, float]:
         """Gets the tags a game has.
 
         Args:
@@ -361,14 +361,14 @@ class GameTags(AbstractRecommenderData):
 
         Returns:
         ---
-        DataFrame: The tags the game has
+        Dict[int, float]: The tags the game has
         """
         game_tags = self.data.loc[self.data["appid"] == appid]
         game_tags.reset_index(drop=True, inplace=True)
-        return game_tags
+        return game_tags.set_index("tagid")["weight"].to_dict()
     
     def get_relevant_games(self, tagid: int) -> Set[int]:
-        """Gets the games that have a tag above the weight threshold.
+        """Gets the games that have a tag above the weight threshold set in the constructor.
 
         Args:
         ---
@@ -467,7 +467,7 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
         logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
         return self.lshensemble.query(min_hash, size)
     
-    def get_game_genres(self, appid: int) -> DataFrame:
+    def get_genres(self, appid: int) -> DataFrame:
         """Gets the genres a game has.
 
         Args:
@@ -480,7 +480,7 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
         """
         game_genres = self.data.loc[self.data["appid"] == appid]
         game_genres.reset_index(drop=True, inplace=True)
-        return game_genres
+        return set(game_genres["genreid"].values)
 
 # NOTE: like game genres, game categories aren't very useful for recommending, but might be useful for filtering.
 # For example, if a user only wants multiplayer games 'Multiplayer' is also a tag and has a weight unlike the category
@@ -561,6 +561,21 @@ class GameCategories(AbstractRecommenderData):
 
         logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
         return self.lshensemble.query(min_hash, size)
+    
+    def get_categories(self, appid: int) -> Set[int]:
+        """Gets the categories a game has.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Set[int]: The categories the game has
+        """
+        game_categories = self.data.loc[self.data["appid"] == appid]
+        game_categories.reset_index(drop=True, inplace=True)
+        return set(game_categories["categoryid"].values)
 
 class GameDevelopersPublishers(AbstractRecommenderData):
     def __init__(self, gd_csv_filename: str, gp_csv_filename: str):
@@ -632,19 +647,68 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         """
         vals = self.gp_data.loc[(self.gp_data["appid"] == appid) & (self.gp_data["publisherid"] == publisher)].values
         return 0.0 if len(vals) == 0 else 1.0
+    
+    def get_developers(self, appid: int) -> Set[int]:
+        """Gets the developers a game has.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Set[int]: The developers the game has
+        """
+        game_developers = self.gd_data.loc[self.gd_data["appid"] == appid]
+        game_developers.reset_index(drop=True, inplace=True)
+        return set(game_developers["developerid"].values)
+    
+    def get_publishers(self, appid: int) -> Set[int]:
+        """Gets the publishers a game has.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Set[int]: The publishers the game has
+        """
+        game_publishers = self.gp_data.loc[self.gp_data["appid"] == appid]
+        game_publishers.reset_index(drop=True, inplace=True)
+        return set(game_publishers["publisherid"].values)
 
 class GameDetails(AbstractRecommenderData):
-    def __init__(self, csv_filename: str):
+    class Game:
+        def __init__(self, game_details_row):
+            self.appid = game_details_row["appid"]
+            self.name = game_details_row["name"]
+            self.required_age = game_details_row["required_age"]
+            self.is_free = game_details_row["is_free"]
+            self.controller_support = game_details_row["controller_support"]
+            self.has_demo = game_details_row["has_demo"]
+            self.price_usd = game_details_row["price_usd"] / 100.00
+            self.mac_os = game_details_row["mac_os"]
+            self.positive_reviews = game_details_row["positive_reviews"]
+            self.negative_reviews = game_details_row["negative_reviews"]
+            self.total_reviews = game_details_row["total_reviews"]
+            self.has_achievements = game_details_row["has_achievements"]
+            self.release_date = game_details_row["release_date"]
+            self.coming_soon = game_details_row["coming_soon"]
+            self.released = not self.coming_soon
+            self.rating = self.positive_reviews / self.total_reviews
+    def __init__(self, csv_filename: str, rating_multiplier: float = config.RATING_MULTIPLIER):
         super().__init__(csv_filename)
         logging.info("Processing game details and setting index on appid...")
         self.data = self.data.set_index("appid")
         logging.info("Finished processing game details")
+        self.rating_multiplier = rating_multiplier
 
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
             raise TypeError("data must be a pandas DataFrame")
         columns = ["appid", "name", "required_age", "is_free", "controller_support", "has_demo", "price_usd", "mac_os", "positive_reviews", "negative_reviews", "total_reviews", "has_achievements", "release_date", "coming_soon"]
-        err_str = "\r\nMake sure the CSV has the following columns in this order:\r\n\t[" + ", ".join(columns) + "]"
+        err_str = "\r\nMake sure the CSV has the following columns:\r\n\t[" + ", ".join(columns) + "]"
         print(data.columns)
         if not all([col in data.columns for col in columns]):
             # check which ones are missing
@@ -654,12 +718,11 @@ class GameDetails(AbstractRecommenderData):
                     missing.append(col)
             raise ValueError("Missing columns: " + ", ".join(missing) + err_str)
     
-    # TODO: Maybe I should have moved all of the get_* methods to a separate class encapsulating a game
-    def get_name(self, appid) -> str:
+    def get_game(self, appid) -> Game:
         """
         Description:
         ---
-        Gets the name of a game.
+        Gets a Game object for a game.
 
         Args:
         ---
@@ -667,137 +730,9 @@ class GameDetails(AbstractRecommenderData):
 
         Returns:
         ---
-        * str: The name of the game
+        * Game: The Game object for the game
         """
-        return self.data.loc[appid, "name"]
-    
-    def get_required_age(self, appid) -> int:
-        """
-        Description:
-        ---
-        Gets the required age of a game.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * int: The required age of the game
-        """
-        return self.data.loc[appid, "required_age"]
-    
-    def is_free(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game is free.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game is free
-        """
-        return self.data.loc[appid, "is_free"]
-    
-    def has_controller_support(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game has controller support.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game has controller support
-        """
-        return self.data.loc[appid, "controller_support"]
-    
-    def has_demo(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game has a demo.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game has a demo
-        """
-        return self.data.loc[appid, "has_demo"]
-    
-    def get_price(self, appid) -> float:
-        """
-        Description:
-        ---
-        Gets the price of a game.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * float: The price of the game
-        """
-        return self.data.loc[appid, "price_usd"] / 100.0
-    
-    def mac_os(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game has Mac OS support.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game has Mac OS support
-        """
-        return self.data.loc[appid, "mac_os"]
-    
-    def get_positive_reviews(self, appid) -> int:
-        """
-        Description:
-        ---
-        Gets the number of positive reviews for a game.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * int: The number of positive reviews for the game
-        """
-        return self.data.loc[appid, "positive_reviews"]
-    
-    def get_negative_reviews(self, appid) -> int:
-        """
-        Description:
-        ---
-        Gets the number of negative reviews for a game.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * int: The number of negative reviews for the game
-        """
-        return self.data.loc[appid, "negative_reviews"]
+        return self.Game(self.data.loc[appid])
     
     def rating(self, appid) -> float:
         """
@@ -816,13 +751,49 @@ class GameDetails(AbstractRecommenderData):
         vals = self.data.loc[appid]
         pos = vals["positive_reviews"]
         tot = vals["total_reviews"]
-        return pos / tot if tot != 0 else 0.0
+        return (pos / tot) * self.rating_multiplier if tot != 0 else 0.0
+
+class Game:
+    def __init__(self, game_details_row, game_categories: Set[int], game_developers: Set[int], game_publishers: Set[int], game_genres: Set[int], game_tags: Dict[int, float], rating_multiplier: float = config.RATING_MULTIPLIER):
+        self.appid = game_details_row["appid"]
+        self.name = game_details_row["name"]
+        self.required_age = game_details_row["required_age"]
+        self.is_free = game_details_row["is_free"]
+        self.controller_support = game_details_row["controller_support"]
+        self.has_demo = game_details_row["has_demo"]
+        self.price_usd = game_details_row["price_usd"] / 100.00
+        self.mac_os = game_details_row["mac_os"]
+        self.positive_reviews = game_details_row["positive_reviews"]
+        self.negative_reviews = game_details_row["negative_reviews"]
+        self.total_reviews = game_details_row["total_reviews"]
+        self.has_achievements = game_details_row["has_achievements"]
+        self.release_date = game_details_row["release_date"]
+        self.coming_soon = game_details_row["coming_soon"]
+        self.released = not self.coming_soon
+        self.score = (self.positive_reviews / self.total_reviews) * rating_multiplier if self.total_reviews != 0 else 0.0
+        self.categories = game_categories
+        self.developers = game_developers
+        self.publishers = game_publishers
+        self.tags = game_tags
+        self.genres = game_genres
+
+    def __str__(self):
+        return f"({self.appid}: {self.name}, score: {self.score})"
+
+class GameInfo():
+    # this class just encapsulates everything else to generate Game objects
+    def __init__(self, game_details: GameDetails, game_categories: GameCategories, game_developers_publishers: GameDevelopersPublishers, game_genres: GameGenres, game_tags: GameTags):
+        self.game_details = game_details
+        self.game_categories = game_categories
+        self.game_developers_publishers = game_developers_publishers
+        self.game_genres = game_genres
+        self.game_tags = game_tags
     
-    def get_total_reviews(self, appid) -> int:
+    def get_game(self, appid) -> Game:
         """
         Description:
         ---
-        Gets the total number of reviews for a game.
+        Gets a Game object for a game.
 
         Args:
         ---
@@ -830,73 +801,15 @@ class GameDetails(AbstractRecommenderData):
 
         Returns:
         ---
-        * int: The total number of reviews for the game
+        * Game: The Game object for the game
         """
-        return self.data.loc[appid, "total_reviews"]
-    
-    def has_achievements(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game has achievements.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game has achievements
-        """
-        return self.data.loc[appid, "achievements"]
-    
-    def get_release_date(self, appid) -> str:
-        """
-        Description:
-        ---
-        Gets the release date of a game.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * str: The release date of the game
-        """
-        return self.data.loc[appid, "release_date"]
-    
-    def is_coming_soon(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game is coming soon.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game is coming soon. The inverse of "is released"
-        """
-        return self.data.loc[appid, "coming_soon"]
-    
-    def is_released(self, appid) -> bool:
-        """
-        Description:
-        ---
-        Gets whether or not a game is released.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-
-        Returns:
-        ---
-        * bool: Whether or not the game is released. The inverse of "is coming soon"
-        """
-        return not self.is_coming_soon(appid)
+        game_details_row = self.game_details.data.loc[appid]
+        game_categories = self.game_categories.get_categories(appid)
+        game_developers = self.game_developers_publishers.get_developers(appid)
+        game_publishers = self.game_developers_publishers.get_publishers(appid)
+        game_genres = self.game_genres.get_genres(appid)
+        game_tags = self.game_tags.get_tags(appid)
+        return Game(game_details_row, game_categories, game_developers, game_publishers, game_genres, game_tags)
 
 ## Similarity ##
 class AbstractSimilarity(ABC):
@@ -1168,6 +1081,68 @@ class PearsonUserSimilarity(RawUserSimilarity):
             total_score += (own_pseudorating - user_mean) * (other_pseudorating - other_mean)
         denominator = (user_denominator * other_denominator) ** 0.5
         return total_score / denominator if denominator != 0 else 0
+
+class RawItemSimilarity(AbstractSimilarity):
+    def __init__(self, game_info: GameInfo, weight_tags = 1, weight_categories = 1, weight_developers_publishers = 1, weight_genres = 1, weight_details = 1) -> None:
+        super().__init__()
+        self.game_info = game_info
+        self.weight_tags = weight_tags
+        self.weight_categories = weight_categories
+        self.weight_developers_publishers = weight_developers_publishers
+        self.weight_genres = weight_genres
+        self.weight_details = weight_details
+    
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the similarity between two games, only taking into account the tags, categories, developers, publishers, genres and details.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games
+        """
+        # check if game_info is set
+        if self.game_info is None:
+            raise ValueError("game_info must be set to use this similarity function")
+
+        game_info = self.game_info.get_game(appid)
+        other_game_info = self.game_info.get_game(other)
+
+        # get the tags, categories, developers, publishers, genres and details
+        tags = game_info.tags
+        other_tags = other_game_info.tags
+        categories = game_info.categories
+        other_categories = other_game_info.categories
+        developers = game_info.developers
+        other_developers = other_game_info.developers
+        publishers = game_info.publishers
+        other_publishers = other_game_info.publishers
+        genres = game_info.genres
+        other_genres = other_game_info.genres
+
+        # compute the similarity
+        similarity = 0
+        for tagid, weight in tags:
+            if tagid in other_tags:
+                similarity += self.weight_tags * weight * other_tags[tagid]
+        similarity /= len(tags) + len(other_tags)  # TODO: replace tag similarity with cosine similarity
+        similarity += self.weight_categories * len(categories.intersection(other_categories)) / len(categories.union(other_categories))
+        similarity += self.weight_developers_publishers * len(developers.intersection(other_developers)) / len(developers.union(other_developers))
+        similarity += self.weight_developers_publishers * len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
+        similarity += self.weight_genres * len(genres.intersection(other_genres)) / len(genres.union(other_genres))
+        similarity += self.weight_details * self.get_details_similarity(game_info, other_game_info)
+        return similarity
+
+    def get_details_similarity(self, game1: Game, other: Game) -> float:
+        # TODO: use game.name, game.required_age, game.is_free, game.controller_support, game.has_demo, game.price_usd, game.mac_os, game.positive_reviews, game.negative_reviews, game.total_reviews, game.has_achievements, game.release_date, game.coming_soon
+        # NOTE: maybe use a DetailsSimilarity class that can be passed to the constructor
+        return 0
 
 # Recommender systems #
 class RandomRecommenderSystem(AbstractRecommenderSystem):

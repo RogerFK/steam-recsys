@@ -12,6 +12,8 @@ import math
 import numpy as np
 import atexit
 import config
+import difflib
+from datetime import datetime
 
 def trivial_hash(x):
     return x
@@ -679,8 +681,8 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         return set(game_publishers["publisherid"].values)
 
 class GameDetails(AbstractRecommenderData):
-    class SingleGameDetails:
-        def __init__(self, game_details_row):
+    class GameWithOnlyDetails:
+        def __init__(self, game_details_row, rating_multiplier: float = config.RATING_MULTIPLIER):
             self.appid = game_details_row["appid"]
             self.name = game_details_row["name"]
             self.required_age = game_details_row["required_age"]
@@ -696,7 +698,7 @@ class GameDetails(AbstractRecommenderData):
             self.release_date = game_details_row["release_date"]
             self.coming_soon = game_details_row["coming_soon"]
             self.released = not self.coming_soon
-            self.rating = self.positive_reviews / self.total_reviews
+            self.rating = self.positive_reviews / self.total_reviews * rating_multiplier
     def __init__(self, csv_filename: str, rating_multiplier: float = config.RATING_MULTIPLIER):
         super().__init__(csv_filename)
         logging.info("Processing game details and setting index on appid...")
@@ -720,7 +722,7 @@ class GameDetails(AbstractRecommenderData):
     
     def get_game_row(self, appid: int): return self.data.loc[appid]
 
-    def get_game(self, appid: int) -> SingleGameDetails:
+    def get_game(self, appid: int) -> GameWithOnlyDetails:
         """
         Description:
         ---
@@ -734,7 +736,7 @@ class GameDetails(AbstractRecommenderData):
         ---
         * Game: The Game object for the game
         """
-        return self.SingleGameDetails(self.data.loc[appid])
+        return self.GameWithOnlyDetails(self.data.loc[appid], self.rating_multiplier)
     
     def rating(self, appid: int) -> float:
         """
@@ -755,22 +757,9 @@ class GameDetails(AbstractRecommenderData):
         tot = vals["total_reviews"]
         return (pos / tot) * self.rating_multiplier if tot != 0 else 0.0
 
-class Game:
+class Game(GameDetails.GameWithOnlyDetails):
     def __init__(self, game_details_row, game_categories: Set[int], game_developers: Set[int], game_publishers: Set[int], game_genres: Set[int], game_tags: Dict[int, float], rating_multiplier: float = config.RATING_MULTIPLIER):
-        self.appid = game_details_row["appid"]
-        self.name = game_details_row["name"]
-        self.required_age = game_details_row["required_age"]
-        self.is_free = game_details_row["is_free"]
-        self.controller_support = game_details_row["controller_support"]
-        self.has_demo = game_details_row["has_demo"]
-        self.price_usd = game_details_row["price_usd"] / 100.00
-        self.mac_os = game_details_row["mac_os"]
-        self.positive_reviews = game_details_row["positive_reviews"]
-        self.negative_reviews = game_details_row["negative_reviews"]
-        self.total_reviews = game_details_row["total_reviews"]
-        self.has_achievements = game_details_row["has_achievements"]
-        self.release_date = game_details_row["release_date"]
-        self.coming_soon = game_details_row["coming_soon"]
+        super().__init__(game_details_row)
         self.released = not self.coming_soon
         self.score = (self.positive_reviews / self.total_reviews) * rating_multiplier if self.total_reviews != 0 else 0.0
         self.categories = game_categories
@@ -1410,22 +1399,98 @@ class JaccardGameDeveloperPublisherSimilarity(AbstractSimilarity):
             other_publishers = self.game_developers_publishers.get_publishers(other)
         
         return len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
-    
-class RawItemSimilarity(AbstractSimilarity):
-    def __init__(self, game_info: GameInfo, weight_tags = 1, weight_categories = 1, weight_developers_publishers = 1, weight_genres = 1, weight_details = 1) -> None:
+
+class GameDetailsSimilarity(AbstractSimilarity):
+    def __init__(
+            self,
+            game_details: GameDetails = None,
+            game_info: GameInfo = None,
+            weight_name: float = 1.0,
+            weight_required_age: float = 1.0,
+            weight_is_free: float = 1.0,
+            weight_controller_support: float = 1.0,
+            weight_has_demo: float = 1.0,
+            weight_price_usd: float = 1.0,
+            weight_mac_os: float = 1.0,
+            weight_rating: float = 1.0,
+            weight_rating_count: float = 1.0,  # rough metric for popularity
+            weight_has_achievements: float = 1.0,
+            weight_release_date: float = 1.0,  # "I only like fresh games" / "old games were better"
+            weight_coming_soon: float = 1.0
+        ) -> None:
         super().__init__()
         self.game_info = game_info
-        self.weight_tags = weight_tags
-        self.weight_categories = weight_categories
-        self.weight_developers_publishers = weight_developers_publishers
-        self.weight_genres = weight_genres
-        self.weight_details = weight_details
+        self.game_details = game_details
+        if self.game_info is None and self.game_details is None:
+            raise ValueError("game_info or game_details must be set to use this similarity function")
+        self.weights = {
+            "name": weight_name,
+            "required_age": weight_required_age,
+            "is_free": weight_is_free,
+            "controller_support": weight_controller_support,
+            "has_demo": weight_has_demo,
+            "price_usd": weight_price_usd,
+            "mac_os": weight_mac_os,
+            "rating": weight_rating,
+            "rating_count": weight_rating_count,
+            "has_achievements": weight_has_achievements,
+            "release_date": weight_release_date,
+            "coming_soon": weight_coming_soon
+        }
+        if self.game_details is not None:
+            self.rating_multiplier = self.game_details.rating_multiplier
+        elif self.game_info is not None:
+            self.rating_multiplier = self.game_info.game_details.rating_multiplier
     
+    def set_weights(self,
+                    weight_name: float = -1.0,
+                    weight_required_age: float = -1.0,
+                    weight_is_free: float = -1.0,
+                    weight_controller_support: float = -1.0,
+                    weight_has_demo: float = -1.0,
+                    weight_price_usd: float = -1.0,
+                    weight_mac_os: float = -1.0,
+                    weight_rating: float = -1.0,
+                    weight_rating_count: float = -1.0,  # rough metric for popularity
+                    weight_has_achievements: float = -1.0,
+                    weight_release_date: float = -1.0,  # "I only like fresh games" / "old games were better"
+                    weight_coming_soon: float = -1.0) -> None:
+        self.weights = {
+            "name": weight_name if weight_name >= 0 else self.weights["name"],
+            "required_age": weight_required_age if weight_required_age >= 0 else self.weights["required_age"],
+            "is_free": weight_is_free if weight_is_free >= 0 else self.weights["is_free"],
+            "controller_support": weight_controller_support if weight_controller_support >= 0 else self.weights["controller_support"],
+            "has_demo": weight_has_demo if weight_has_demo >= 0 else self.weights["has_demo"],
+            "price_usd": weight_price_usd if weight_price_usd >= 0 else self.weights["price_usd"],
+            "mac_os": weight_mac_os if weight_mac_os >= 0 else self.weights["mac_os"],
+            "rating": weight_rating if weight_rating >= 0 else self.weights["rating"],
+            "rating_count": weight_rating_count if weight_rating_count >= 0 else self.weights["rating_count"],
+            "has_achievements": weight_has_achievements if weight_has_achievements >= 0 else self.weights["has_achievements"],
+            "release_date": weight_release_date if weight_release_date >= 0 else self.weights["release_date"],
+            "coming_soon": weight_coming_soon if weight_coming_soon >= 0 else self.weights["coming_soon"]
+        }
+
+    def set_weights_dict(self, weights: Dict[str, float]) -> None:
+        self.weights = {
+            "name": weights["name"] if "name" in weights else self.weights["name"],
+            "required_age": weights["required_age"] if "required_age" in weights else self.weights["required_age"],
+            "is_free": weights["is_free"] if "is_free" in weights else self.weights["is_free"],
+            "controller_support": weights["controller_support"] if "controller_support" in weights else self.weights["controller_support"],
+            "has_demo": weights["has_demo"] if "has_demo" in weights else self.weights["has_demo"],
+            "price_usd": weights["price_usd"] if "price_usd" in weights else self.weights["price_usd"],
+            "mac_os": weights["mac_os"] if "mac_os" in weights else self.weights["mac_os"],
+            "rating": weights["rating"] if "rating" in weights else self.weights["rating"],
+            "rating_count": weights["rating_count"] if "rating_count" in weights else self.weights["rating_count"],
+            "has_achievements": weights["has_achievements"] if "has_achievements" in weights else self.weights["has_achievements"],
+            "release_date": weights["release_date"] if "release_date" in weights else self.weights["release_date"],
+            "coming_soon": weights["coming_soon"] if "coming_soon" in weights else self.weights["coming_soon"]
+        }
+
     def similarity(self, appid: int, other: int) -> float:
         """
         Description:
         ---
-        Computes the similarity between two games, only taking into account the tags, categories, developers, publishers, genres and details.
+        Computes the similarity between two games, only taking into account the details.
 
         Args:
         ---
@@ -1434,44 +1499,100 @@ class RawItemSimilarity(AbstractSimilarity):
 
         Returns:
         ---
-        float: The similarity between the two games
+        float: The similarity between the two games, from 0 to 1
         """
-        # check if game_info is set
-        if self.game_info is None:
-            raise ValueError("game_info must be set to use this similarity function")
+        if self.game_info is not None:
+            details = self.game_info.get_game(appid)
+            other_details = self.game_info.get_game(other)
+        elif self.game_details is not None:
+            details = self.game_details.get_game(appid)
+            other_details = self.game_details.get_game(other)
+        
+        similarity = difflib.SequenceMatcher(None, details.name, other_details.name).ratio() * self.weights["name"] if self.weights["name"] > 0 else 0
+        similarity += 1 - abs(details.required_age - other_details.required_age) / 18 * self.weights["required_age"] if self.weights["required_age"] > 0 else 0
+        similarity += self.weights["is_free"] if details.is_free == other_details.is_free else 0
+        similarity += 1.0 - abs(details.controller_support - other_details.controller_support) / 2 * self.weights["controller_support"] if self.weights["controller_support"] > 0 else 0
+        similarity += self.weights["has_demo"] if details.has_demo == other_details.has_demo else 0
+        similarity += max(1 - abs(details.price_usd - other_details.price_usd) / 70, 0) * self.weights["price_usd"] if self.weights["price_usd"] > 0 else 0
+        similarity += self.weights["mac_os"] if details.mac_os == other_details.mac_os else 0
+        similarity += max(1 - abs(details.rating - other_details.rating) / self.rating_multiplier, 0) * self.weights["rating"] if self.weights["rating"] > 0 else 0
+        similarity += max(1 - abs(details.total_reviews - other_details.total_reviews) / max(details.total_reviews, other_details.total_reviews), 0) * self.weights["rating_count"] if self.weights["rating_count"] > 0 else 0
+        similarity += self.weights["has_achievements"] if details.has_achievements == other_details.has_achievements else 0
+        similarity += 0
+        if self.weights["release_date"] > 0:
+            try:
+                own_release_date = datetime.strptime(details.release_date, "%b %d, %Y")
+                other_release_date = datetime.strptime(other_details.release_date, "%b %d, %Y")
+                similarity += max(1 - abs((own_release_date - other_release_date).days) / 365, 0) * self.weights["release_date"] if self.weights["release_date"] > 0 else 0
+            except:  # Some games don't have a release date, some others have "Coming Soon" or even emojis
+                pass
+        similarity += self.weights["coming_soon"] if details.coming_soon == other_details.coming_soon else 0
 
-        game_info = self.game_info.get_game(appid)
-        other_game_info = self.game_info.get_game(other)
+        return similarity / sum(self.weights.values())
 
-        # get the tags, categories, developers, publishers, genres and details
-        tags = game_info.tags
-        other_tags = other_game_info.tags
-        categories = game_info.categories
-        other_categories = other_game_info.categories
-        developers = game_info.developers
-        other_developers = other_game_info.developers
-        publishers = game_info.publishers
-        other_publishers = other_game_info.publishers
-        genres = game_info.genres
-        other_genres = other_game_info.genres
 
-        # compute the similarity
-        similarity = 0
-        for tagid, weight in tags:
-            if tagid in other_tags:
-                similarity += self.weight_tags * weight * other_tags[tagid]
-        similarity /= len(tags) + len(other_tags)  # TODO: replace tag similarity with cosine similarity
-        similarity += self.weight_categories * len(categories.intersection(other_categories)) / len(categories.union(other_categories))
-        similarity += self.weight_developers_publishers * len(developers.intersection(other_developers)) / len(developers.union(other_developers))
-        similarity += self.weight_developers_publishers * len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
-        similarity += self.weight_genres * len(genres.intersection(other_genres)) / len(genres.union(other_genres))
-        similarity += self.weight_details * self.get_details_similarity(game_info, other_game_info)
-        return similarity
 
-    def get_details_similarity(self, game1: Game, other: Game) -> float:
-        # TODO: use game.name, game.required_age, game.is_free, game.controller_support, game.has_demo, game.price_usd, game.mac_os, game.positive_reviews, game.negative_reviews, game.total_reviews, game.has_achievements, game.release_date, game.coming_soon
-        # NOTE: maybe use a DetailsSimilarity class that can be passed to the constructor
-        return 0
+#class RawItemSimilarity(AbstractSimilarity):
+#    def __init__(self, game_info: GameInfo, weight_tags = 1, weight_categories = 1, weight_developers_publishers = 1, weight_genres = 1, weight_details = 1) -> None:
+#        super().__init__()
+#        self.game_info = game_info
+#        self.weight_tags = weight_tags
+#        self.weight_categories = weight_categories
+#        self.weight_developers_publishers = weight_developers_publishers
+#        self.weight_genres = weight_genres
+#        self.weight_details = weight_details
+#    
+#    def similarity(self, appid: int, other: int) -> float:
+#        """
+#        Description:
+#        ---
+#        Computes the similarity between two games, only taking into account the tags, categories, developers, publishers, genres and details.
+#
+#        Args:
+#        ---
+#        appid (int): The appid of the game
+#        other (int): The appid of the game to compare to
+#
+#        Returns:
+#        ---
+#        float: The similarity between the two games
+#        """
+#        # check if game_info is set
+#        if self.game_info is None:
+#            raise ValueError("game_info must be set to use this similarity function")
+#
+#        game_info = self.game_info.get_game(appid)
+#        other_game_info = self.game_info.get_game(other)
+#
+#        # get the tags, categories, developers, publishers, genres and details
+#        tags = game_info.tags
+#        other_tags = other_game_info.tags
+#        categories = game_info.categories
+#        other_categories = other_game_info.categories
+#        developers = game_info.developers
+#        other_developers = other_game_info.developers
+#        publishers = game_info.publishers
+#        other_publishers = other_game_info.publishers
+#        genres = game_info.genres
+#        other_genres = other_game_info.genres
+#
+#        # compute the similarity
+#        similarity = 0
+#        for tagid, weight in tags:
+#            if tagid in other_tags:
+#                similarity += self.weight_tags * weight * other_tags[tagid]
+#        similarity /= len(tags) + len(other_tags)  # TODO: replace tag similarity with cosine similarity
+#        similarity += self.weight_categories * len(categories.intersection(other_categories)) / len(categories.union(other_categories))
+#        similarity += self.weight_developers_publishers * len(developers.intersection(other_developers)) / len(developers.union(other_developers))
+#        similarity += self.weight_developers_publishers * len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
+#        similarity += self.weight_genres * len(genres.intersection(other_genres)) / len(genres.union(other_genres))
+#        similarity += self.weight_details * self.get_details_similarity(game_info, other_game_info)
+#        return similarity
+#
+#    def get_details_similarity(self, game1: Game, other: Game) -> float:
+#        # TODO: use game.name, game.required_age, game.is_free, game.controller_support, game.has_demo, game.price_usd, game.mac_os, game.positive_reviews, game.negative_reviews, game.total_reviews, game.has_achievements, game.release_date, game.coming_soon
+#        # NOTE: maybe use a DetailsSimilarity class that can be passed to the constructor
+#        return 0
 
 
 # Recommender systems #

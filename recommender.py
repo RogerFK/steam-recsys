@@ -866,6 +866,24 @@ class AbstractSimilarity(ABC):
         float: The similarity between the two items
         """
         pass
+class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only used to check if a class is of type "app similarity"
+    @abstractmethod
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the similarity between two games.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
+
+        Returns:
+        ---
+        float: The similarity between the two games, from 0 to 1
+        """
+        pass
 class RawUserSimilarity(AbstractSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime) -> None:
         super(RawUserSimilarity).__init__()
@@ -1118,13 +1136,13 @@ class PearsonUserSimilarity(RawUserSimilarity):
         denominator = (user_denominator * other_denominator) ** 0.5
         return total_score / denominator if denominator != 0 else 0
 
-class RawGameTagSimilarity(AbstractSimilarity):
+class RawGameTagSimilarity(AbstractGameSimilarity):
     def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
         super().__init__()
-        self.game_info = game_info
-        self.game_tags = game_tags
+        
         if self.game_info is None and self.game_tags is None:
             raise ValueError("game_info or game_tags must be set to use this similarity function")
+        self.game_tags = game_tags if game_tags is not None else game_info.game_tags
 
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -1141,21 +1159,48 @@ class RawGameTagSimilarity(AbstractSimilarity):
         ---
         float: The similarity between the two games
         """
-
-        if self.game_info is not None:
-            tags = self.game_info.get_game(appid).tags
-            other_tags = self.game_info.get_game(other).tags
-        elif self.game_tags is not None:
-            tags = self.game_tags.get_tags(appid)
-            other_tags = self.game_tags.get_tags(other)
+        tags = self.game_tags.get_tags(appid)
+        other_tags = self.game_tags.get_tags(other)
         # compute the similarity
         similarity = 0
         for tagid, weight in tags:
             if tagid in other_tags:
                 similarity += weight * other_tags[tagid]
         return similarity
+    
+    def get_similar_games(self, appid: int, n: int = 10) -> List[Tuple[int, float]]:
+        """
+        Description:
+        ---
+        Gets the n most similar games to the given game, only taking into account the tags.
 
-class CosineGameTagSimilarity(AbstractSimilarity):
+        Args:
+        ---
+        appid (int): The appid of the game
+        n (int): The number of games to return
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: A list of tuples containing the appid and similarity of the n most similar games
+        """
+        games = self.game_tags.get_lsh_similar_games(appid, n)
+
+        logging.info(f"Finding similar games to {appid}. Please wait...")
+        priority_queue = PriorityQueue(n + 1)
+        for candidate_appid, _ in games:
+            similarity = self.similarity(appid, candidate_appid)
+            priority_queue.put((similarity, candidate_appid))
+            if priority_queue.qsize() > n:
+                priority_queue.get()
+        similar_games = []
+        while not priority_queue.empty():
+            similarity, candidate_appid = priority_queue.get()
+            similar_games.append((candidate_appid, similarity))
+        logging.info(f"Finished finding {n} similar games to {appid}")
+        sim_users = pd.DataFrame(reversed(similar_games), columns=["appid", "similarity"])
+        return sim_users
+
+class CosineGameTagSimilarity(RawGameTagSimilarity):
     def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
         super().__init__()
         self.game_info = game_info
@@ -1200,7 +1245,7 @@ class CosineGameTagSimilarity(AbstractSimilarity):
             other_norm += weight ** 2
         return similarity / (own_norm * other_norm) ** 0.5
 
-class PearsonGameTagSimilarity(AbstractSimilarity):
+class PearsonGameTagSimilarity(RawGameTagSimilarity):
     def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
         super().__init__()
         self.game_info = game_info
@@ -1252,7 +1297,7 @@ class PearsonGameTagSimilarity(AbstractSimilarity):
                 similarity += (weight - own_mean) * (other_tags[tagid] - other_mean)
         return similarity / (own_norm * other_norm) ** 0.5
 
-class JaccardGameCategorySimilarity(AbstractSimilarity):
+class JaccardGameCategorySimilarity(AbstractGameSimilarity):
     def __init__(self, game_categories: GameCategories = None, game_info: GameInfo = None) -> None:
         super().__init__()
         self.game_info = game_info
@@ -1284,7 +1329,7 @@ class JaccardGameCategorySimilarity(AbstractSimilarity):
         
         return len(categories.intersection(other_categories)) / len(categories.union(other_categories))
 
-class JaccardGameGenreSimilarity(AbstractSimilarity):
+class JaccardGameGenreSimilarity(AbstractGameSimilarity):
     def __init__(self, game_genres: GameGenres = None, game_info: GameInfo = None) -> None:
         super().__init__()
         self.game_info = game_info
@@ -1316,7 +1361,7 @@ class JaccardGameGenreSimilarity(AbstractSimilarity):
         
         return len(genres.intersection(other_genres)) / len(genres.union(other_genres))
     
-class JaccardGameDeveloperPublisherSimilarity(AbstractSimilarity):
+class JaccardGameDeveloperPublisherSimilarity(AbstractGameSimilarity):
     def __init__(self, game_developers_publishers: GameDevelopersPublishers = None, game_info: GameInfo = None) -> None:
         super().__init__()
         self.game_info = game_info
@@ -1400,7 +1445,7 @@ class JaccardGameDeveloperPublisherSimilarity(AbstractSimilarity):
         
         return len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
 
-class GameDetailsSimilarity(AbstractSimilarity):
+class GameDetailsSimilarity(AbstractGameSimilarity):
     def __init__(
             self,
             game_details: GameDetails = None,
@@ -1507,93 +1552,63 @@ class GameDetailsSimilarity(AbstractSimilarity):
         elif self.game_details is not None:
             details = self.game_details.get_game(appid)
             other_details = self.game_details.get_game(other)
-        
-        similarity = difflib.SequenceMatcher(None, details.name, other_details.name).ratio() * self.weights["name"] if self.weights["name"] > 0 else 0
-        similarity += 1 - abs(details.required_age - other_details.required_age) / 18 * self.weights["required_age"] if self.weights["required_age"] > 0 else 0
-        similarity += self.weights["is_free"] if details.is_free == other_details.is_free else 0
-        similarity += 1.0 - abs(details.controller_support - other_details.controller_support) / 2 * self.weights["controller_support"] if self.weights["controller_support"] > 0 else 0
-        similarity += self.weights["has_demo"] if details.has_demo == other_details.has_demo else 0
-        similarity += max(1 - abs(details.price_usd - other_details.price_usd) / 70, 0) * self.weights["price_usd"] if self.weights["price_usd"] > 0 else 0
-        similarity += self.weights["mac_os"] if details.mac_os == other_details.mac_os else 0
-        similarity += max(1 - abs(details.rating - other_details.rating) / self.rating_multiplier, 0) * self.weights["rating"] if self.weights["rating"] > 0 else 0
-        similarity += max(1 - abs(details.total_reviews - other_details.total_reviews) / max(details.total_reviews, other_details.total_reviews), 0) * self.weights["rating_count"] if self.weights["rating_count"] > 0 else 0
-        similarity += self.weights["has_achievements"] if details.has_achievements == other_details.has_achievements else 0
-        similarity += 0
+        similarity = 0.0
+        similarity += difflib.SequenceMatcher(None, details.name, other_details.name).ratio() * self.weights["name"] if self.weights["name"] > 0 else 0.0
+        similarity += (1.0 - (abs(details.required_age - other_details.required_age) / 18.0)) * self.weights["required_age"] if self.weights["required_age"] > 0 else 0.0
+        similarity += self.weights["is_free"] if details.is_free == other_details.is_free else 0.0
+        similarity += (1.0 - abs(details.controller_support - other_details.controller_support) / 2.0) * self.weights["controller_support"] if self.weights["controller_support"] > 0 else 0.0
+        similarity += self.weights["has_demo"] if details.has_demo == other_details.has_demo else 0.0
+        similarity += max(1 - abs(details.price_usd - other_details.price_usd) / 70.0, 0) * self.weights["price_usd"] if self.weights["price_usd"] > 0 else 0.0
+        similarity += self.weights["mac_os"] if details.mac_os == other_details.mac_os else 0.0
+        similarity += max(1 - abs(details.rating - other_details.rating) / self.rating_multiplier, 0) * self.weights["rating"] if self.weights["rating"] > 0 else 0.0
+        similarity += max(1 - abs(details.total_reviews - other_details.total_reviews) / max(details.total_reviews, other_details.total_reviews), 0) * self.weights["rating_count"] if self.weights["rating_count"] > 0 else 0.0
+        similarity += self.weights["has_achievements"] if details.has_achievements == other_details.has_achievements else 0.0
         if self.weights["release_date"] > 0:
             try:
                 own_release_date = datetime.strptime(details.release_date, "%b %d, %Y")
                 other_release_date = datetime.strptime(other_details.release_date, "%b %d, %Y")
-                similarity += max(1 - abs((own_release_date - other_release_date).days) / 365, 0) * self.weights["release_date"] if self.weights["release_date"] > 0 else 0
+                similarity += max(1.0 - abs((own_release_date - other_release_date).days) / 365.0, 0) * self.weights["release_date"]
             except:  # Some games don't have a release date, some others have "Coming Soon" or even emojis
                 pass
-        similarity += self.weights["coming_soon"] if details.coming_soon == other_details.coming_soon else 0
+        similarity += self.weights["coming_soon"] if details.coming_soon == other_details.coming_soon else 0.0
 
         return similarity / sum(self.weights.values())
 
+class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity):
+    def __init__(self, game_similarities: List[Tuple[AbstractGameSimilarity, float]]) -> None:
+        """
+        Args:
+        ---
+            game_similarities (List[Tuple[AbstractGameSimilarity, float]]): A list of tuples containing the game similarity class and its weight
+        """
+        super().__init__()
+        self.game_similarities = game_similarities
+        # check if they're all game similarities and precompute the sum of the weights
+        self.weights_sum = 0.0
+        for game_similarity, weight in self.game_similarities:
+            if not isinstance(game_similarity, AbstractGameSimilarity):
+                raise TypeError( game_similarity.__class__.__name__ + " is not an instance of" + AbstractGameSimilarity.__name__)
+            self.weights_sum += weight
+    
+    def similarity(self, appid: int, other: int) -> float:
+        """
+        Description:
+        ---
+        Computes the similarity between two games, only taking into account the details.
 
+        Args:
+        ---
+        appid (int): The appid of the game
+        other (int): The appid of the game to compare to
 
-#class RawItemSimilarity(AbstractSimilarity):
-#    def __init__(self, game_info: GameInfo, weight_tags = 1, weight_categories = 1, weight_developers_publishers = 1, weight_genres = 1, weight_details = 1) -> None:
-#        super().__init__()
-#        self.game_info = game_info
-#        self.weight_tags = weight_tags
-#        self.weight_categories = weight_categories
-#        self.weight_developers_publishers = weight_developers_publishers
-#        self.weight_genres = weight_genres
-#        self.weight_details = weight_details
-#    
-#    def similarity(self, appid: int, other: int) -> float:
-#        """
-#        Description:
-#        ---
-#        Computes the similarity between two games, only taking into account the tags, categories, developers, publishers, genres and details.
-#
-#        Args:
-#        ---
-#        appid (int): The appid of the game
-#        other (int): The appid of the game to compare to
-#
-#        Returns:
-#        ---
-#        float: The similarity between the two games
-#        """
-#        # check if game_info is set
-#        if self.game_info is None:
-#            raise ValueError("game_info must be set to use this similarity function")
-#
-#        game_info = self.game_info.get_game(appid)
-#        other_game_info = self.game_info.get_game(other)
-#
-#        # get the tags, categories, developers, publishers, genres and details
-#        tags = game_info.tags
-#        other_tags = other_game_info.tags
-#        categories = game_info.categories
-#        other_categories = other_game_info.categories
-#        developers = game_info.developers
-#        other_developers = other_game_info.developers
-#        publishers = game_info.publishers
-#        other_publishers = other_game_info.publishers
-#        genres = game_info.genres
-#        other_genres = other_game_info.genres
-#
-#        # compute the similarity
-#        similarity = 0
-#        for tagid, weight in tags:
-#            if tagid in other_tags:
-#                similarity += self.weight_tags * weight * other_tags[tagid]
-#        similarity /= len(tags) + len(other_tags)  # TODO: replace tag similarity with cosine similarity
-#        similarity += self.weight_categories * len(categories.intersection(other_categories)) / len(categories.union(other_categories))
-#        similarity += self.weight_developers_publishers * len(developers.intersection(other_developers)) / len(developers.union(other_developers))
-#        similarity += self.weight_developers_publishers * len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
-#        similarity += self.weight_genres * len(genres.intersection(other_genres)) / len(genres.union(other_genres))
-#        similarity += self.weight_details * self.get_details_similarity(game_info, other_game_info)
-#        return similarity
-#
-#    def get_details_similarity(self, game1: Game, other: Game) -> float:
-#        # TODO: use game.name, game.required_age, game.is_free, game.controller_support, game.has_demo, game.price_usd, game.mac_os, game.positive_reviews, game.negative_reviews, game.total_reviews, game.has_achievements, game.release_date, game.coming_soon
-#        # NOTE: maybe use a DetailsSimilarity class that can be passed to the constructor
-#        return 0
-
+        Returns:
+        ---
+        float: The similarity between the two games, from 0 to 1
+        """
+        similarity = 0.0
+        for game_similarity, weight in self.game_similarities:
+            similarity += game_similarity.similarity(appid, other) * weight
+        return similarity / self.weights_sum
 
 # Recommender systems #
 class RandomRecommenderSystem(AbstractRecommenderSystem):
@@ -1615,30 +1630,7 @@ class RandomRecommenderSystem(AbstractRecommenderSystem):
             if priority_queue.qsize() > n:
                 _ = priority_queue.get()
 
-        return self.recommendations_from_priority_queue(priority_queue)
-
-class TagBasedRecommenderSystem(AbstractRecommenderSystem):
-    def __init__(self, tags_file: str):
-        super().__init__()
-        self.tags = pd.read_csv(tags_file).groupby("appid")
-
-    def validate_data(self, data: DataFrame):
-        if not isinstance(data, DataFrame):
-            raise TypeError("data must be a pandas DataFrame")
-        if not "appid" in data.columns:
-            raise ValueError("data must have a 'appid' column. Make sure you're using the 'game_tags.csv' file data")
-        if not "tagid" in data.columns:
-            raise ValueError("data must have a 'tagid' column. Make sure you're using the 'game_tags.csv' file data")
-        if not "priority" in data.columns:
-            raise ValueError("data must have a 'priority' column.  Make sure you're using the 'game_tags.csv' file data")
-
-    def recommend(self, data: DataFrame, steamid: int, n: int = 10) -> DataFrame:
-        super().recommend(data, steamid, n)
-        # Since this one is TagBased, we're going to use the 'game_tags.csv' file
-        # The structure for this file is:
-        # "appid","tagid","priority"
-        self.validate_data(data)
-    
+        return self.recommendations_from_priority_queue(priority_queue)    
 
 class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, pgdata: PlayerGamesPlaytime, similarity: RawUserSimilarity):
@@ -1695,3 +1687,12 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
             raise ValueError("data must have a 'appid' column")
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
+
+class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
+    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity):
+        super().__init__()
+        self.pgdata = pgdata
+        self.tags = tags
+        self.game_similarity = game_similarity
+
+    

@@ -81,7 +81,6 @@ class AbstractRecommenderData(ABC):
             with open(f"bin_data/{pickle_filename}.pickle", "rb") as f:
                 logging.info(f"Loading pickled data for {self.__class__.__name__}...")
                 self.processed_data = pickle.load(f)
-                self.data = self.processed_data["data"]
                 logging.info(f"Loaded pickled data from {f.name}")
                 return
         except FileNotFoundError:
@@ -349,6 +348,9 @@ class GameTags(AbstractRecommenderData):
         ---
         Generator[int, None, None]: A list of appids
         """
+        if appid not in self.minhashes:
+            logging.debug(f"Game {appid} not in minhashes, probably dead / hidden game.")
+            return None
         min_hash, size = self.minhashes[appid]
 
         logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
@@ -581,7 +583,8 @@ class GameCategories(AbstractRecommenderData):
 
 class GameDevelopersPublishers(AbstractRecommenderData):
     def __init__(self, gd_csv_filename: str, gp_csv_filename: str):
-        super().__init__(gd_csv_filename, "game_developers_publishers")
+        pickle_filename = "game_developers_publishers"
+        super().__init__(gd_csv_filename, pickle_filename)
         if self.processed_data is not None:
             self.gd_data = self.processed_data["gd_data"]
             self.gp_data = self.processed_data["gp_data"]
@@ -593,7 +596,7 @@ class GameDevelopersPublishers(AbstractRecommenderData):
             "gd_data": self.gd_data,
             "gp_data": self.gp_data,
         }
-        with open(f"bin_data/game_developers_publishers.pickle", "wb") as f:
+        with open(f"bin_data/{pickle_filename}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
@@ -613,7 +616,7 @@ class GameDevelopersPublishers(AbstractRecommenderData):
             raise ValueError("data must have a 'appid' column")
         if not "developerid" in data.columns:
             raise ValueError("data must have a 'publisherid' column")
-    
+
     def rating_dev(self, appid, developer) -> float:
         """
         Description:
@@ -679,6 +682,26 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         game_publishers = self.gp_data.loc[self.gp_data["appid"] == appid]
         game_publishers.reset_index(drop=True, inplace=True)
         return set(game_publishers["publisherid"].values)
+    
+    def rating(self, appid, developer, publisher) -> float:
+        """
+        Description:
+        ---
+        If a game has a developer and publisher, it is rated 1.0, otherwise if only one of them is present, it is rated 0.5, otherwise 0.0.
+
+        Args:
+        ---
+        * appid (int): the appid of the game
+        * developer (int): the developerid of the developer
+        * publisher (int): the publisherid of the publisher
+
+        Returns:
+        ---
+        * float: 1.0 if the game has the developer and publisher, 0.5 if only one of them is present, 0.0 otherwise
+        """
+        dev = self.rating_dev(appid, developer) / 2.0
+        pub = self.rating_pub(appid, publisher) / 2.0
+        return dev + pub
 
 class GameDetails(AbstractRecommenderData):
     class GameWithOnlyDetails:
@@ -711,7 +734,6 @@ class GameDetails(AbstractRecommenderData):
             raise TypeError("data must be a pandas DataFrame")
         columns = ["appid", "name", "required_age", "is_free", "controller_support", "has_demo", "price_usd", "mac_os", "positive_reviews", "negative_reviews", "total_reviews", "has_achievements", "release_date", "coming_soon"]
         err_str = "\r\nMake sure the CSV has the following columns:\r\n\t[" + ", ".join(columns) + "]"
-        print(data.columns)
         if not all([col in data.columns for col in columns]):
             # check which ones are missing
             missing = []
@@ -1123,15 +1145,13 @@ class PearsonUserSimilarity(RawUserSimilarity):
         other_games_played = self.pgdata.get_user_games(other)
         
         games_to_iterate = own_games_played.join(other_games_played, on="appid", how="outer", lsuffix="_left", rsuffix="_right").drop(columns=["steamid_left", "steamid_right"])
-        print(games_to_iterate)
-        print(games_to_iterate.columns)
+
         total_score = 0
         user_mean, user_denominator = self.get_user_mean_denominator(steamid)
         other_mean, other_denominator = self.get_user_mean_denominator(other)
 
         for idx, row in games_to_iterate.iterrows():
             _, appid_left, own_pseudorating, appid_right, other_pseudorating = row
-            print(appid_left, own_pseudorating, appid_right, other_pseudorating)
             total_score += (own_pseudorating - user_mean) * (other_pseudorating - other_mean)
         denominator = (user_denominator * other_denominator) ** 0.5
         return total_score / denominator if denominator != 0 else 0
@@ -1139,8 +1159,7 @@ class PearsonUserSimilarity(RawUserSimilarity):
 class RawGameTagSimilarity(AbstractGameSimilarity):
     def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
         super().__init__()
-        
-        if self.game_info is None and self.game_tags is None:
+        if game_info is None and game_tags is None:
             raise ValueError("game_info or game_tags must be set to use this similarity function")
         self.game_tags = game_tags if game_tags is not None else game_info.game_tags
 
@@ -1163,12 +1182,12 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         other_tags = self.game_tags.get_tags(other)
         # compute the similarity
         similarity = 0
-        for tagid, weight in tags:
+        for tagid, weight in tags.items():
             if tagid in other_tags:
                 similarity += weight * other_tags[tagid]
         return similarity
     
-    def get_similar_games(self, appid: int, n: int = 10) -> List[Tuple[int, float]]:
+    def get_similar_games(self, appid: int, n: int = 10) -> DataFrame:
         """
         Description:
         ---
@@ -1181,13 +1200,14 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
 
         Returns:
         ---
-        List[Tuple[int, float]]: A list of tuples containing the appid and similarity of the n most similar games
+        DataFrame: A list of tuples containing the appid and similarity of the n most similar games
         """
-        games = self.game_tags.get_lsh_similar_games(appid, n)
-
+        games = self.game_tags.get_lsh_similar_games(appid)
+        if games is None:
+            return None
         logging.info(f"Finding similar games to {appid}. Please wait...")
         priority_queue = PriorityQueue(n + 1)
-        for candidate_appid, _ in games:
+        for candidate_appid in games:
             similarity = self.similarity(appid, candidate_appid)
             priority_queue.put((similarity, candidate_appid))
             if priority_queue.qsize() > n:
@@ -1197,16 +1217,11 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
             similarity, candidate_appid = priority_queue.get()
             similar_games.append((candidate_appid, similarity))
         logging.info(f"Finished finding {n} similar games to {appid}")
-        sim_users = pd.DataFrame(reversed(similar_games), columns=["appid", "similarity"])
-        return sim_users
+        return pd.DataFrame(reversed(similar_games), columns=["appid", "similarity"])
 
 class CosineGameTagSimilarity(RawGameTagSimilarity):
     def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
-        super().__init__()
-        self.game_info = game_info
-        self.game_tags = game_tags
-        if self.game_info is None and self.game_tags is None:
-            raise ValueError("game_info or game_tags must be set to use this similarity function")
+        super().__init__(game_tags, game_info)
         # NOTE: We don't need to precompute game tag norms because at most a game has 19 tags
         # and thus the overhead of accessing the norm through a dictionary is higher than
         # just computing it on the fly
@@ -1226,32 +1241,24 @@ class CosineGameTagSimilarity(RawGameTagSimilarity):
         ---
         float: The similarity between the two games
         """
-        if self.game_info is not None:
-            tags = self.game_info.get_game(appid).tags
-            other_tags = self.game_info.get_game(other).tags
-        elif self.game_tags is not None:
-            tags = self.game_tags.get_tags(appid)
-            other_tags = self.game_tags.get_tags(other)
+        tags = self.game_tags.get_tags(appid)
+        other_tags = self.game_tags.get_tags(other)
         
         # compute the similarity
         similarity = 0
         own_norm = 0
         other_norm = 0
-        for tagid, weight in tags:
+        for tagid, weight in tags.items():
             own_norm += weight ** 2
             if tagid in other_tags:
                 similarity += weight * other_tags[tagid]
-        for tagid, weight in other_tags:
+        for tagid, weight in other_tags.items():
             other_norm += weight ** 2
         return similarity / (own_norm * other_norm) ** 0.5
 
 class PearsonGameTagSimilarity(RawGameTagSimilarity):
     def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
-        super().__init__()
-        self.game_info = game_info
-        self.game_tags = game_tags
-        if self.game_info is None and self.game_tags is None:
-            raise ValueError("game_info or game_tags must be set to use this similarity function")
+        super().__init__(game_tags, game_info)
         # NOTE: We don't need to precompute game tag norms and means because at most 
         # a game has 19 tags and thus the overhead of accessing the norm through
         # a dictionary is higher than just computing it on the fly
@@ -1271,23 +1278,19 @@ class PearsonGameTagSimilarity(RawGameTagSimilarity):
         ---
         float: The similarity between the two games
         """
-        if self.game_info is not None:
-            tags = self.game_info.get_game(appid).tags
-            other_tags = self.game_info.get_game(other).tags
-        elif self.game_tags is not None:
-            tags = self.game_tags.get_tags(appid)
-            other_tags = self.game_tags.get_tags(other)
-        
+        tags = self.game_tags.get_tags(appid)
+        other_tags = self.game_tags.get_tags(other)
+
         # compute the similarity
         similarity = 0
         own_norm = 0
         other_norm = 0
         own_mean = 0
         other_mean = 0
-        for tagid, weight in tags:
+        for tagid, weight in tags.items():
             own_norm += weight ** 2
             own_mean += weight
-        for tagid, weight in other_tags:
+        for tagid, weight in other_tags.items():
             other_norm += weight ** 2
             other_mean += weight
         own_mean /= len(tags)
@@ -1688,11 +1691,94 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
 
+class TagBasedRecommenderSystem(AbstractRecommenderSystem):
+    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: RawGameTagSimilarity):
+        super().__init__()
+        self.pgdata = pgdata
+        if not isinstance(game_similarity, RawGameTagSimilarity):
+            raise TypeError( game_similarity.__class__.__name__ + " is not an instance of" + RawGameTagSimilarity.__name__)
+        self.game_similarity = game_similarity
+
+    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True) -> DataFrame:
+        # super().recommend(data, steamid, n)
+        # self.validate_data(data)
+        """Gets the rough top n games from similar users
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        user_games = self.pgdata.get_user_games(steamid)
+        user_games = user_games[user_games["playtime_forever"] > 0]
+        user_games = user_games.sort_values(by="playtime_forever", ascending=False)
+        user_games = user_games.head(n*2)
+
+        games = {}
+        for idx, row in user_games.iterrows():
+            _, appid, _ = row
+            appid = int(appid)
+            similar_games = self.game_similarity.get_similar_games(appid)
+            if similar_games is None:
+                continue
+            for idx, row in similar_games.iterrows():
+                other_appid, similarity = row
+                other_appid = int(other_appid)
+                if filter_owned and self.pgdata.rating(steamid, other_appid) > 0:
+                    continue
+                if not other_appid in games:
+                    games[other_appid] = 0
+                games[other_appid] += similarity
+
+        priority_queue = PriorityQueue(n + 1)
+        for appid, score in games.items():
+
+            priority_queue.put((score, appid))
+            if priority_queue.qsize() > n:
+                _ = priority_queue.get()
+        return self.recommendations_from_priority_queue(priority_queue)
+
+# TODO content based recommender system
 class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity):
         super().__init__()
         self.pgdata = pgdata
-        self.tags = tags
-        self.game_similarity = game_similarity
+        self.game_similarity = game_similarity # TODO: game similarity has the entire game info, could it be easier in the main code to just pass the game info?
+
+    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True) -> DataFrame:
+        # super().recommend(data, steamid, n)
+        # self.validate_data(data)
+        """Gets the rough top n games from similar users
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        user_games = self.pgdata.get_user_games(steamid)
+        similar_games = self.game_similarity.get_similar_games(user_games)
+        games = {}
+        for other_appid in similar_games:
+            if filter_owned and self.pgdata.rating(steamid, other_appid) > 0:
+                continue
+            if not other_appid in games:
+                games[other_appid] = 0
+            games[other_appid] += pseudorating * self.game_similarity.similarity(appid, other_appid)
+
+        priority_queue = PriorityQueue(n + 1)
+        for appid, score in games.items():
+
+            priority_queue.put((score, appid))
+            if priority_queue.qsize() > n:
+                _ = priority_queue.get()
+        return self.recommendations_from_priority_queue(priority_queue)
 
     

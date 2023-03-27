@@ -120,7 +120,8 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             os.makedirs("bin_data/PGPTData")
         self.pickle_name = self.pickle_name_fmt.format(str(playtime_normalizer), threshold, num_perm, num_part)
         super().__init__(filename, self.pickle_name)  # load the processed data if it exists
-        
+        self.playtime_normalizer = playtime_normalizer
+        self.minhash_num_perm = num_perm
         self.dirty = self.processed_data is None
         if not self.dirty:
             self.lshensemble = self.processed_data["lshensemble"]
@@ -129,7 +130,6 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             return
         self.validate_data(self.data)
         logging.info("Processing player games...")
-        self.playtime_normalizer = playtime_normalizer
         logging.info("Normalizing data...")
         self.data = self.playtime_normalizer.normalize(self.data)
         logging.info("Data normalized.")
@@ -267,6 +267,7 @@ class GameTags(AbstractRecommenderData):
         filename (str): The filename of the game tags data. Defaults to "game_tags.csv".
         """
         super().__init__(csv_filename, pickle_filename="game_tags")
+        self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
             self.data = self.processed_data["data"]
@@ -356,6 +357,20 @@ class GameTags(AbstractRecommenderData):
         logging.debug(f"Querying LSH Ensemble for similar games to {appid}...")
         return self.lshensemble.query(min_hash, size)
     
+    def get_minhash_similar_games(self, minhash: MinHash, size: int) -> Generator[int, None, None]:
+        """Gets all similar games beyond the threshold set in the constructor.
+        This method is mainly used to get similar games to a user's profile.
+
+        Args:
+        ---
+        minhash (MinHash): The minhash of the game
+
+        Returns:
+        ---
+        Generator[int, None, None]: A list of appids
+        """
+        return self.lshensemble.query(minhash, size)
+    
     def get_tags(self, appid: int) -> Dict[int, float]:
         """Gets the tags a game has.
 
@@ -370,6 +385,19 @@ class GameTags(AbstractRecommenderData):
         game_tags = self.data.loc[self.data["appid"] == appid]
         game_tags.reset_index(drop=True, inplace=True)
         return game_tags.set_index("tagid")["weight"].to_dict()
+    
+    def get_weighted_tags_for_list(self, appids: List[int]) -> Dict[int, Dict[int, float]]:
+        """Gets the tags for a list of games.
+
+        Args:
+        ---
+        appids (List[int]): The appids of the games
+
+        Returns:
+        ---
+        Dict[int, Dict[int, float]]: The tags the games have
+        """
+        return {appid: self.get_tags(appid) for appid in appids}
     
     def get_relevant_games(self, tagid: int) -> Set[int]:
         """Gets the games that have a tag above the weight threshold set in the constructor.
@@ -394,10 +422,25 @@ class GameTags(AbstractRecommenderData):
         DataFrame: the DataFrame including all game tags and their weights
         """
         return self.data
+    
+    def get_tag_name(self, tagid: int) -> str:
+        """Gets the name of a tag.
+
+        Args:
+        ---
+        tagid (int): The tagid of the tag
+
+        Returns:
+        ---
+        str: The name of the tag
+        """
+        # TODO
+        return tagid
+        # return self.tag_names[tagid]
 
 # this class below is the same as GameTagsData but uses game_genres.csv instead
 class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limited, so this is not very useful. Hence, we won't waste much time on it.
-    def __init__(self, csv_filename: str):
+    def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
         super().__init__(csv_filename, "game_genres")
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
@@ -405,7 +448,8 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
             self.minhashes = self.processed_data["minhashes"]
             return
         self.validate_data(self.data)
-        self.lshensemble = MinHashLSHEnsemble(threshold=0.8, num_perm=128, num_part=32)
+        self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
+        self.minhash_num_perm = num_perm
         lsh_ensemble_index = []
         self.minhashes = {}
         logging.info("Computing MinHashes for each game...")
@@ -492,7 +536,7 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
 # don't want to play a game like Black Mesa, which is mainly a singleplayer game but has a multiplayer mode
 # Thus, we won't waste much time on this either.
 class GameCategories(AbstractRecommenderData):
-    def __init__(self, csv_filename: str):
+    def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
         super().__init__(csv_filename, "game_categories")
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
@@ -500,7 +544,8 @@ class GameCategories(AbstractRecommenderData):
             self.minhashes = self.processed_data["minhashes"]
             return
         self.validate_data(self.data)
-        self.lshensemble = MinHashLSHEnsemble(threshold=0.8, num_perm=128, num_part=32)
+        self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
+        self.minhash_num_perm = num_perm
         lsh_ensemble_index = []
         self.minhashes = {}
         logging.info("Computing MinHashes for each game...")
@@ -1692,31 +1737,49 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
             raise ValueError("data must have a 'playtime_forever' column")
 
 class TagBasedRecommenderSystem(AbstractRecommenderSystem):
-    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: RawGameTagSimilarity):
-        super().__init__()
-        self.pgdata = pgdata
-        if not isinstance(game_similarity, RawGameTagSimilarity):
-            raise TypeError( game_similarity.__class__.__name__ + " is not an instance of" + RawGameTagSimilarity.__name__)
-        self.game_similarity = game_similarity
+    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: RawGameTagSimilarity, perfect_match_weight = 0.2):
+        """
+        Description
+        ---
+        Basic tag based recommender system
 
-    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True) -> DataFrame:
-        # super().recommend(data, steamid, n)
-        # self.validate_data(data)
-        """Gets the rough top n games from similar users
+        Args:
+        ---
+        * pgdata (PlayerGamesPlaytime): The PlayerGamesPlaytime object
+        * game_similarity (RawGameTagSimilarity): The game similarity object
+        * perfect_match_weight (float, optional): How much weight to give to perfect matches. Defaults to 0.2.
+
+        Raises:
+        ---
+        * TypeError: If game_similarity is not an instance of RawGameTagSimilarity, or if pgdata is not an instance of PlayerGamesPlaytime
+        """
+        super().__init__()
+        if not isinstance(pgdata, PlayerGamesPlaytime):
+            raise TypeError(pgdata.__class__.__name__ + " is not an instance of" + PlayerGamesPlaytime.__name__)
+        self.pgdata = pgdata        
+        if not isinstance(game_similarity, RawGameTagSimilarity):
+            raise TypeError(game_similarity.__class__.__name__ + " is not an instance of" + RawGameTagSimilarity.__name__)
+        self.game_similarity = game_similarity
+        self.game_tags = self.game_similarity.game_tags
+        self.perfect_match_weight = perfect_match_weight
+
+    def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = True) -> DataFrame:
+        """Gets the rough top n games from games similar to the top games of the user
 
         Args:
         ---
         steamid (int): The steamid of the user
         n (int, optional): The number of games to return. Defaults to 10. -1 for all
+        n_games (int, optional): The number of top games to use. Defaults to 20.
+        filter_owned (bool, optional): Whether to filter out games that the user already owns. Defaults to True.
 
         Returns:
         ---
         list: A list of tuples (appid, similarity)
         """
         user_games = self.pgdata.get_user_games(steamid)
-        user_games = user_games[user_games["playtime_forever"] > 0]
         user_games = user_games.sort_values(by="playtime_forever", ascending=False)
-        user_games = user_games.head(n*2)
+        user_games = user_games.head(n_games)
 
         games = {}
         for idx, row in user_games.iterrows():
@@ -1733,6 +1796,116 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
                 if not other_appid in games:
                     games[other_appid] = 0
                 games[other_appid] += similarity
+
+        priority_queue = PriorityQueue(n + 1)
+        for appid, score in games.items():
+
+            priority_queue.put((score, appid))
+            if priority_queue.qsize() > n:
+                _ = priority_queue.get()
+        return self.recommendations_from_priority_queue(priority_queue)
+    
+    def recommend(self, steamid: int, n: int = 10, filter_owned = True) -> DataFrame:
+        # super().recommend(data, steamid, n)
+        # self.validate_data(data)
+        """Gets the top n games from games similar to the MinHash of the user,
+        weighted by the PlayerGamesPlaytime normalized pseudoratings
+
+        Args:
+        ---
+        data (DataFrame): The DataFrame containing the data
+        steamid (int): The steamid of the user
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        user_games = self.pgdata.get_user_games(steamid)
+        
+        game_tags_length = 19 # we know the max length of the tags is 19
+        minhash = MinHash(self.game_tags.minhash_num_perm, hashfunc=trivial_hash)
+        tag_weight = {}
+        
+        game_tags = self.game_tags.get_weighted_tags_for_list(user_games["appid"].values)
+        for appid, tags in game_tags.items():
+            for tagid, weight in tags.items():
+                if not tagid in tag_weight:
+                    tag_weight[tagid] = 0
+                tag_weight[tagid] += weight
+        
+        # pick the top 19 tags
+        tag_weight = sorted(tag_weight.items(), key=lambda x: x[1], reverse=True)
+        tag_weight = tag_weight[:game_tags_length]
+        tag_weight = dict(tag_weight)
+        logging.info(f"Tag weights for user {steamid}: " + "\r\n".join([f"{self.game_tags.get_tag_name(tagid)}: {weight:.2f}" for tagid, weight in tag_weight.items()]))
+        minhash.update_batch(tag_weight.keys())
+
+        games = {}
+        similar_games = self.game_tags.get_minhash_similar_games(minhash, game_tags_length)
+        for appid in similar_games:
+            if filter_owned and self.pgdata.rating(steamid, appid) > 0:
+                continue
+            similarity = 0
+            tags = self.game_tags.get_tags(appid)
+            perfect_match = True
+            for tagid, weight in tags.items():
+                if tagid in tag_weight:
+                    similarity += weight * tag_weight[tagid]
+                else:
+                    perfect_match = False
+            games[appid] = similarity + perfect_match * (similarity * self.perfect_match_weight)
+        
+        priority_queue = PriorityQueue(n + 1)
+        for appid, score in games.items():
+            priority_queue.put((score, appid))
+            if priority_queue.qsize() > n:
+                _ = priority_queue.get()
+        return self.recommendations_from_priority_queue(priority_queue)
+
+
+    
+    def score(self, steamid: int, appid: int) -> float:
+        user_games = self.pgdata.get_user_games(steamid)
+
+        score = 0
+        for idx, row in user_games.iterrows():
+            _, other_appid, _ = row
+            other_appid = int(other_appid)
+            similarity = self.game_similarity.get_similarity(other_appid, appid)
+            if similarity is None:
+                continue
+            score += similarity
+        return score
+
+class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
+    def __init__(self, game_details: GameDetails):
+        super().__init__()
+        self.game_details = game_details
+    
+    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True) -> DataFrame:
+        # super().recommend(data, steamid, n)
+        # self.validate_data(data)
+        """Gets the rough top n games from similar users
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        games = {}
+        for idx, row in self.game_details.iterrows():
+            appid, name, rating = row
+            appid = int(appid)
+            if filter_owned and self.pgdata.rating(steamid, appid) > 0:
+                continue
+            if not appid in games:
+                games[appid] = 0
+            games[appid] += rating
 
         priority_queue = PriorityQueue(n + 1)
         for appid, score in games.items():

@@ -19,85 +19,6 @@ from datetime import datetime
 def trivial_hash(x):
     return x
 
-class AbstractRecommenderSystem(ABC):
-    def __init__(self):
-        self.score_results = {}
-
-    @abstractmethod
-    def recommend(self, steamid: int, n: int = 10) -> DataFrame:
-        """Recommends games to a user
-
-        Args:
-        ---
-         * steamid (int): The steamid of the user
-         * n (int, optional): The number of recommendations. Defaults to 10.
-
-        Returns:
-        ---
-        DataFrame: appid -> score, ordered by score, up to n items
-        """
-        self.validate_steamid(steamid)
-        self.validate_n(n)
-    
-    def score(self, steamid: int, appid: int) -> float:
-        """Scores a game for the users recommended to, through self.score_results
-
-        Args:
-        ---
-         * steamid (int): The steamid of the user
-         * appid (int): The appid of the game
-
-        Returns:
-        ---
-        float: The score of the game for the user
-        """
-        self.validate_steamid(steamid)
-        self.validate_appid(appid)
-        if steamid not in self.score_results:
-            logging.warning(f"steamid {steamid} not in score_results, calling self.recommend")
-            self.recommend(steamid)
-        if appid not in self.score_results[steamid]:
-            return 0.0
-        return self.score_results[steamid][appid]
-    
-    def recommendations_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:  # TODO: maybe remove this
-        """Converts a priority queue to a DataFrame, ordered by score, up to n items
-
-        Args:
-        ---
-         * priority_queue (PriorityQueue): The priority queue to convert
-
-        Returns:
-        ---
-        DataFrame: appid -> score, ordered by score
-        """
-        recommendations = []
-        while not priority_queue.qsize() == 0:
-            score, appid = priority_queue.get()
-            recommendations.append((appid, score))
-        recommendations = pd.DataFrame(reversed(recommendations),
-                                       columns=["appid", "score"],
-                                       dtype=object)
-        return recommendations
-
-    def validate_steamid(self, steamid: int):
-        if not isinstance(steamid, int):
-            raise TypeError("steamid must be an int")
-        if steamid < 76500000000000000:
-            raise ValueError("invalid steamid")
-
-    def validate_n(self, n: int):
-        if not isinstance(n, int):
-            raise TypeError("n must be an int")
-        if n < 1:
-            raise ValueError("n must be positive")
-    
-    def validate_appid(self, appid: int):
-        if not isinstance(appid, int):
-            raise TypeError("appid must be an int")
-        if appid < 0:
-            raise ValueError("appid must be non-negative")
-
 class AbstractRecommenderData(ABC):
     def __init__(self, csv_filename: str, pickle_filename: str = None):
         self.processed_data = None
@@ -1714,6 +1635,122 @@ class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity):
         return similarity / self.weights_sum
 
 # Recommender systems #
+class AbstractRecommenderSystem(ABC):
+    def __init__(self, pgdata: PlayerGamesPlaytime):
+        self.score_results = {}
+        self.pgdata = pgdata
+
+    def recommend(self, steamid: int, n: int = 10, filter_owned = True) -> DataFrame:
+        """Recommends games to a user
+
+        Args:
+        ---
+        * steamid (int): The steamid of the user
+        * n (int, optional): The number of recommendations. Defaults to 10.
+        * filter_owned (bool, optional): Whether to filter out games the user already owns. Defaults to True.
+
+        Returns:
+        ---
+        DataFrame: appid -> score, ordered by score, up to n items
+        """
+        self.validate_steamid(steamid)
+        self.validate_n(n)
+
+        if steamid in self.score_results:
+            games = self.score_results[steamid]
+        else:
+            # TODO: maybe delete some old results to save memory
+            games = self.generate_recommendations(steamid, n)
+            # sort games
+            games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
+            self.score_results[steamid] = games
+        
+        # get the top n games
+        if n == -1:
+            return games if not filter_owned else {k:v for k,v in games.items() if k not in self.pgdata.get_games(steamid)}
+        else:
+            return list(games.items())[:n]
+
+    
+    def score(self, steamid: int, appid: int) -> float:
+        """Scores a game for the users recommended to, through self.score_results
+
+        Args:
+        ---
+         * steamid (int): The steamid of the user
+         * appid (int): The appid of the game
+
+        Returns:
+        ---
+        float: The score of the game for the user
+        """
+        self.validate_steamid(steamid)
+        self.validate_appid(appid)
+        if steamid not in self.score_results:
+            logging.warning(f"steamid {steamid} not in score_results, calling self.recommend")
+            self.recommend(steamid)
+        if appid not in self.score_results[steamid]:
+            return 0.0
+        return self.score_results[steamid][appid]
+    
+    def recommendations_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:  # TODO: maybe remove this
+        """Converts a priority queue to a DataFrame, ordered by score, up to n items
+
+        Args:
+        ---
+         * priority_queue (PriorityQueue): The priority queue to convert
+
+        Returns:
+        ---
+        DataFrame: appid -> score, ordered by score
+        """
+        recommendations = []
+        while not priority_queue.qsize() == 0:
+            score, appid = priority_queue.get()
+            recommendations.append((appid, score))
+        recommendations = pd.DataFrame(reversed(recommendations),
+                                       columns=["appid", "score"],
+                                       dtype=object)
+        return recommendations
+    
+    @abstractmethod
+    def generate_recommendations(self, steamid: int, n: int) -> Dict[int, float]:
+        """
+        Description
+        ---
+        Generates recommendations for a user
+        
+        NOTE: Recommendations are cached to be used in ContentBasedRecommenderSystem.score / ContentBasedRecommenderSystem.recommend
+
+        Args:
+        ---
+         * steamid (int): The steamid of the user
+         * n (int): The number of recommendations
+
+        Returns:
+        ---
+        Dict[int, float]: appid -> score, ordered by score, up to n items
+        """
+        raise NotImplementedError
+
+    def validate_steamid(self, steamid: int):
+        if not isinstance(steamid, int):
+            raise TypeError("steamid must be an int")
+        if steamid < 76500000000000000:
+            raise ValueError("invalid steamid")
+
+    def validate_n(self, n: int):
+        if not isinstance(n, int):
+            raise TypeError("n must be an int")
+        if n < 1:
+            raise ValueError("n must be positive")
+    
+    def validate_appid(self, appid: int):
+        if not isinstance(appid, int):
+            raise TypeError("appid must be an int")
+        if appid < 0:
+            raise ValueError("appid must be non-negative")
+
 class RandomRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, csv_filename: str = "data/appids.csv"):
         self.data = pd.read_csv(csv_filename)
@@ -1739,53 +1776,47 @@ class RandomRecommenderSystem(AbstractRecommenderSystem):
 
 class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, pgdata: PlayerGamesPlaytime, similarity: RawUserSimilarity):
-        super().__init__()
-        self.pgdata = pgdata
+        super().__init__(pgdata)
         self.similarity = similarity
     
-    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True, n_users: int = 20) -> DataFrame:
-        # super().recommend(data, steamid, n)
-        # self.validate_data(data)
-        """Gets the rough top n games from similar users
+    def recommend(self, steamid: int, n: int = 10, n_users = 50, filter_owned=True) -> DataFrame:
+        """
+        Description
+        ---
+        Generates recommendations for a user
+        
+        NOTE: Recommendations are cached to be used in ContentBasedRecommenderSystem.score / ContentBasedRecommenderSystem.recommend
 
         Args:
         ---
-        steamid (int): The steamid of the user
-        n (int, optional): The number of games to return. Defaults to 10. -1 for all
-        n_users (int, optional): The number of similar users to use. Defaults to 20.
+         * steamid (int): The steamid of the user
+         * n (int): The number of recommendations
+         * n_users (int): The number of similar users to use
 
         Returns:
         ---
-        list: A list of tuples (appid, similarity)
+        Dict[int, float]: appid -> score, ordered by score, up to n items
         """
-        
-        if steamid in self.score_results:
-            games = self.score_results[steamid]
-        else:
-            similar_users = self.similarity.get_similar_users(steamid, n_users)
-            logging.info(f"Getting top {n} games from top {n_users} similar users to {steamid}. Please wait...")
-            games = {}
-            for idx, row in similar_users.iterrows():
-                other_steamid, similarity = row
-                other_steamid = int(other_steamid)
-                user_games = self.pgdata.get_user_games(other_steamid)
-                for idx, row in user_games.iterrows():
-                    _, appid, pseudorating = row
-                    appid = int(appid)
-                    if filter_owned and self.pgdata.rating(steamid, appid) > 0:
-                        continue
-                    if not appid in games:
-                        games[appid] = 0
-                    games[appid] += pseudorating * similarity
-            # sort games
-            games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
-            self.score_results[steamid] = games
-        
-        # get the top n games
-        if n == -1:
-            return games
-        else:
-            return list(games.items())[:n]
+        self.n_users = n_users  # little hack to reuse code
+        return super().recommend(steamid, n, filter_owned)
+    
+    def generate_recommendations(self, steamid: int, n: int, filter_owned: bool) -> Dict[int, float]:
+        similar_users = self.similarity.get_similar_users(steamid, self.n_users)
+        logging.info(f"Getting top {n} games from top {self.n_users} similar users to {steamid}. Please wait...")
+        games = {}
+        for idx, row in similar_users.iterrows():
+            other_steamid, similarity = row
+            other_steamid = int(other_steamid)
+            user_games = self.pgdata.get_user_games(other_steamid)
+            for idx, row in user_games.iterrows():
+                _, appid, pseudorating = row
+                appid = int(appid)
+                if filter_owned and self.pgdata.rating(steamid, appid) > 0:
+                    continue
+                if not appid in games:
+                    games[appid] = 0
+                games[appid] += pseudorating * similarity
+        return games
 
     
     def validate_data(self, data: DataFrame):
@@ -1824,6 +1855,7 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
         self.game_similarity = game_similarity
         self.game_tags = self.game_similarity.game_tags
         self.perfect_match_weight = perfect_match_weight
+        self.score_results_from_top_games = {}
 
     def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = True) -> DataFrame:
         """Gets the rough top n games from games similar to the top games of the user
@@ -1839,8 +1871,8 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
         ---
         list: A list of tuples (appid, similarity)
         """
-        if steamid in self.score_results:
-            games = self.score_results[steamid]
+        if steamid in self.score_results_from_top_games:
+            games = self.score_results_from_top_games[steamid]
         else:
             user_games = self.pgdata.get_user_games(steamid)
             user_games = user_games.sort_values(by="playtime_forever", ascending=False)
@@ -1862,7 +1894,7 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
                     games[other_appid] += similarity
             # sort games
             games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
-            self.score_results[steamid] = games
+            self.score_results_from_top_games[steamid] = games
         
         # get the top n games
         if n == -1:
@@ -1870,70 +1902,42 @@ class TagBasedRecommenderSystem(AbstractRecommenderSystem):
         else:
             return list(games.items())[:n]
     
-    def recommend(self, steamid: int, n: int = 10, filter_owned = True) -> DataFrame:
-        # super().recommend(data, steamid, n)
-        # self.validate_data(data)
-        """Gets the top n games from games similar to the MinHash of the user,
-        weighted by the PlayerGamesPlaytime normalized pseudoratings
-
-        Args:
-        ---
-        data (DataFrame): The DataFrame containing the data
-        steamid (int): The steamid of the user
-        n (int, optional): The number of games to return. Defaults to 10. -1 for all
-
-        Returns:
-        ---
-        list: A list of tuples (appid, similarity)
-        """
+    def generate_recommendations(self, steamid: int, n: int, filter_owned: bool) -> Dict[int, float]:
+        user_games = self.pgdata.get_user_games(steamid)
         
-        if steamid in self.score_results:
-            games = self.score_results[steamid]
-        else:
-            user_games = self.pgdata.get_user_games(steamid)
+        game_tags_length = 19 # we know the max length of the tags is 19
+        minhash = MinHash(self.game_tags.minhash_num_perm, hashfunc=trivial_hash)
+        tag_weight = {}
         
-            game_tags_length = 19 # we know the max length of the tags is 19
-            minhash = MinHash(self.game_tags.minhash_num_perm, hashfunc=trivial_hash)
-            tag_weight = {}
-            
-            game_tags = self.game_tags.get_weighted_tags_for_list(user_games["appid"].values)
-            for appid, tags in game_tags.items():
-                for tagid, weight in tags.items():
-                    if not tagid in tag_weight:
-                        tag_weight[tagid] = 0
-                    tag_weight[tagid] += weight
-            
-            # pick the top 19 tags
-            tag_weight = sorted(tag_weight.items(), key=lambda x: x[1], reverse=True)
-            tag_weight = tag_weight[:game_tags_length]
-            tag_weight = dict(tag_weight)
-            logging.debug(f"Tag weights for user {steamid}: " + "\r\n".join([f"{self.game_tags.get_tag_name(tagid)}: {weight:.2f}" for tagid, weight in tag_weight.items()]))
-            minhash.update_batch(tag_weight.keys())
-            games = {}
-            similar_games = self.game_tags.get_minhash_similar_games(minhash, game_tags_length)
-            for appid in similar_games:
-                if filter_owned and self.pgdata.rating(steamid, appid) > 0:
-                    continue
-                similarity = 0
-                tags = self.game_tags.get_tags(appid)
-                perfect_match = True
-                for tagid, weight in tags.items():
-                    if tagid in tag_weight:
-                        similarity += weight * tag_weight[tagid]
-                    else:
-                        perfect_match = False
-                games[appid] = similarity + perfect_match * (similarity * self.perfect_match_weight)
-            
-            self.score_results[steamid] = games
-            # sort games
-            games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
-            self.score_results[steamid] = games
+        game_tags = self.game_tags.get_weighted_tags_for_list(user_games["appid"].values)
+        for appid, tags in game_tags.items():
+            for tagid, weight in tags.items():
+                if not tagid in tag_weight:
+                    tag_weight[tagid] = 0
+                tag_weight[tagid] += weight
         
-        # get the top n games
-        if n == -1:
-            return games
-        else:
-            return list(games.items())[:n]
+        # pick the top 19 tags
+        tag_weight = sorted(tag_weight.items(), key=lambda x: x[1], reverse=True)
+        tag_weight = tag_weight[:game_tags_length]
+        tag_weight = dict(tag_weight)
+        logging.debug(f"Tag weights for user {steamid}: " + "\r\n".join([f"{self.game_tags.get_tag_name(tagid)}: {weight:.2f}" for tagid, weight in tag_weight.items()]))
+        minhash.update_batch(tag_weight.keys())
+        games = {}
+        similar_games = self.game_tags.get_minhash_similar_games(minhash, game_tags_length)
+        for appid in similar_games:
+            if filter_owned and self.pgdata.rating(steamid, appid) > 0:
+                continue
+            similarity = 0
+            tags = self.game_tags.get_tags(appid)
+            perfect_match = True
+            for tagid, weight in tags.items():
+                if tagid in tag_weight:
+                    similarity += weight * tag_weight[tagid]
+                else:
+                    perfect_match = False
+            games[appid] = similarity + perfect_match * (similarity * self.perfect_match_weight)
+        
+        return games
 
 class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, game_details: GameDetails, pgdata: PlayerGamesPlaytime = None):
@@ -2007,6 +2011,20 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
         float: The score of the game for the user
         """
         return self.score_results[appid]
+
+class GameCategoryRecommenderSystem(AbstractRecommenderSystem):
+    def __init__(self, game_categories: GameCategories, pgdata: PlayerGamesPlaytime = None):
+        """Description
+        ---
+        Recommends games based on the categories of the game
+
+        Args:
+            game_categories (GameCategories): The GameCategories object
+            pgdata (PlayerGamesPlaytime): The PlayerGamesPlaytime object.
+        """
+        super().__init__()
+        self.game_categories = game_categories
+        self.pgdata = pgdata
         
 # TODO content based recommender system from various recommenders using the .score() method
 

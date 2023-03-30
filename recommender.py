@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 import logging
-from typing import Any, Dict, Generator, List, Set, Tuple
+from typing import Any, Dict, Generator, List, Set, Tuple, Union
 from pandas.core.api import DataFrame
 import pandas as pd
 from normalization import AbstractPlaytimeNormalizer
@@ -141,8 +141,8 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         """
         vals = self.data.loc[(self.data["appid"] == appid) & (self.data["steamid"] == steamid), "playtime_forever"].values
         if len(vals) == 0:
-            return 0
-        return vals[0]
+            return 0.0
+        return vals[0] if not math.isnan(vals[0]) else 0.0
     
     def get_user_games(self, steamid: int) -> DataFrame:
         """Gets the games a user has played
@@ -997,8 +997,9 @@ class RawUserSimilarity(AbstractSimilarity):
         total_score = 0
         for idx, row in own_games_played.iterrows():
             _, appid, own_pseudorating = row
-            total_score += self.pgdata.rating(other, appid) * own_pseudorating
-        
+            if own_pseudorating > 0:
+                total_score += self.pgdata.rating(other, appid) * own_pseudorating
+
         return total_score  # raw score, but don't penalize for having more games
 
     def player_similarities_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:
@@ -1036,7 +1037,7 @@ class RawUserSimilarity(AbstractSimilarity):
         """
         rough_similar_users = self.pgdata.get_lsh_similar_users(steamid)
         
-        logging.info(f"Finding similar users to {steamid}. Please wait...")
+        logging.info(f"Finding {n} similar users to {steamid}. Please wait...")
         priority_queue = PriorityQueue(n + 1)
         for similar_user in rough_similar_users:
             if similar_user == steamid:
@@ -1046,7 +1047,7 @@ class RawUserSimilarity(AbstractSimilarity):
             if priority_queue.qsize() > n:
                 _ = priority_queue.get()
         
-        logging.info(f"Found relevant similar users.")
+        logging.info(f"Finished finding relevant similar users.")
         return self.player_similarities_from_priority_queue(priority_queue)
 
 class CosineUserSimilarity(RawUserSimilarity):
@@ -1207,9 +1208,13 @@ class PearsonUserSimilarity(RawUserSimilarity):
         total_score = 0
         user_mean, user_denominator = self.get_user_mean_denominator(steamid)
         other_mean, other_denominator = self.get_user_mean_denominator(other)
-
+        
         for idx, row in games_to_iterate.iterrows():
             _, appid_left, own_pseudorating, appid_right, other_pseudorating = row
+            if np.isnan(own_pseudorating):
+                own_pseudorating = 0
+            if np.isnan(other_pseudorating):
+                other_pseudorating = 0
             total_score += (own_pseudorating - user_mean) * (other_pseudorating - other_mean)
         denominator = (user_denominator * other_denominator) ** 0.5
         return total_score / denominator if denominator != 0 else 0
@@ -1731,11 +1736,12 @@ class AbstractRecommenderSystem(ABC):
         self.validate_steamid(steamid)
         self.validate_n(n)
 
-        logging.info(f"{self.__class__.__name__}: Getting top {n} games from top {self.n_users} similar users to {steamid}. Please wait...")
+        logging.info(f"{self.__class__.__name__}: Getting top {n} games for {steamid}. Please wait...")
         if steamid in self.score_results:
             games = self.score_results[steamid]
         else:
             # TODO: maybe delete some old results to save memory
+            #       bet there is a hook for the GC to make this easier
             games = self.generate_recommendations(steamid)
             # sort games
             games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
@@ -1743,9 +1749,14 @@ class AbstractRecommenderSystem(ABC):
         
         # get the top n games
         if n == -1:
-            return games if not filter_owned else {k: v for k, v in games.items() if k not in self.pgdata.get_games(steamid)}
+            results = games if not filter_owned else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)}
         else:
-            return list(games.items())[:n]
+            results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else list(games.items())[:n]
+        
+        df = DataFrame.from_dict(results, orient="index", columns=["score"])
+        df.index.name = "appid"
+        df = df.sort_values(by="score", ascending=False)
+        return df
 
     
     def score(self, steamid: int, appid: int) -> float:
@@ -1843,7 +1854,10 @@ class RandomRecommenderSystem(AbstractRecommenderSystem):
             if priority_queue.qsize() > n:
                 _ = priority_queue.get()
         
-        return self.recommendations_from_priority_queue(priority_queue)    
+        return self.recommendations_from_priority_queue(priority_queue)  
+
+    def generate_recommendations(self, steamid: int) -> Dict[int, float]:
+        return self.recommend(steamid, n=-1)
 
     def score(self, steamid: int, appid: int) -> float:
         import random
@@ -1918,7 +1932,7 @@ class GameTagsRecommenderSystem(AbstractRecommenderSystem):
         ---
         * TypeError: If game_similarity is not an instance of RawGameTagSimilarity, or if pgdata is not an instance of PlayerGamesPlaytime
         """
-        super().__init__()
+        super().__init__(pgdata)
         if not isinstance(pgdata, PlayerGamesPlaytime):
             raise TypeError(pgdata.__class__.__name__ + " is not an instance of" + PlayerGamesPlaytime.__name__)
         self.pgdata = pgdata        
@@ -2047,16 +2061,16 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
         self.game_details = game_details
         self.pgdata = pgdata
         # we can precompute the results, since they're global
-        self.score_results = {}
+        score_results = {}
 
         for game in self.game_details.get_all_games():
             appid = game.appid
             rating = game.rating
-            if not appid in self.score_results:
-                self.score_results[appid] = 0
-            self.score_results[appid] += rating
+            if not appid in score_results:
+                score_results[appid] = 0
+            score_results[appid] += rating
         
-        self.score_results = OrderedDict(sorted(self.score_results.items(), key=lambda item: item[1], reverse=True))
+        self.score_results = OrderedDict(sorted(score_results.items(), key=lambda item: item[1], reverse=True))
 
     
     def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True) -> DataFrame:
@@ -2107,10 +2121,10 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
         """
         return self.score_results[appid]
 class AttributeScoringSystem:
-    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, perfect_match_weight = 0.2):
+    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, non_perfect_match_penalization = 0):
         self.pgdata = pgdata
         self.game_similarity = game_similarity
-        self.perfect_match_weight = perfect_match_weight
+        self.non_perfect_match_penalization = non_perfect_match_penalization
         self.user_maps = {} # steamid -> {appid: score}
     
     def generate_user_map(self, steamid: int):
@@ -2123,13 +2137,10 @@ class AttributeScoringSystem:
         ---
         steamid (int): The steamid of the user
         """
-        # get the games the user owns
         user_games = self.pgdata.get_user_games(steamid)
         user_map = {}
         for appid in user_games["appid"].values:
-            # get game items
-            items = self.game_similarity.get_game_items(appid)
-            for itemid, weight in items:
+            for itemid, weight in self.game_similarity.get_game_items(appid):
                 if not itemid in user_map:
                     user_map[itemid] = 0
                 user_map[itemid] += weight
@@ -2156,14 +2167,81 @@ class AttributeScoringSystem:
         user_map = self.user_maps[steamid]
         score = 0
         perfect_match = True
-        for itemid, weight in self.game_similarity.get_game_items(appid).items():
+        for itemid, weight in self.game_similarity.get_game_items(appid):
             if itemid in user_map:
                 score += weight * user_map[itemid]
             else:
                 perfect_match = False
-            
-        return score + perfect_match * (score * self.perfect_match_weight)
+        # TODO: the "perfect_match_weight" is not really a weight, but a penalization
+        return score - (not perfect_match) * (score * self.non_perfect_match_penalization) / sum(self.user_maps[steamid].values())
         
-# TODO content based recommender system from various recommenders using the .score() method
+class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
+    EXPAND_FURTHER = 1.5
+    def __init__(self, *args: List[Tuple[Union[AttributeScoringSystem, AbstractRecommenderSystem], float]], **kwargs):
+        # first check if args are tuples of (AbstractRecommenderSystem, weight) or (AttributeScoringSystem, weight)
+        for arg in args:
+            if not isinstance(arg, tuple):
+                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
+                                 f" (got {arg.__class__.__name__})")
+            if not isinstance(arg[0], (AbstractRecommenderSystem, AttributeScoringSystem)):
+                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
+                                 f" (got {arg[0].__class__.__name__} as the first item of a tuple)")
+            if not isinstance(arg[1], (int, float)):
+                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
+                                 f" (got {arg[1].__class__.__name__} as the second item of a tuple)")
+        pgdata = None
+        for arg in args:
+            if (isinstance(arg[0], AttributeScoringSystem) or isinstance(arg[0], AbstractRecommenderSystem)) and arg[0].pgdata is not None:
+                pgdata = arg[0].pgdata
+                break
+        super().__init__(pgdata)
+        self.recommenders = args
+        self.kwargs = kwargs
 
+    # little hack to get 'n' without changing generate_recommendations
+    def recommend(self, steamid: int, n: int = 10, filter_owned=True) -> DataFrame:
+        self._last_n = n
+        return super().recommend(steamid, n, filter_owned)
+
+    def generate_recommendations(self, steamid: int) -> Dict[int, float]:
+        recommendations = {}
+        checked_appids = {} # recommender -> set of appids checked
+        max_scores = {} # recommender -> max score
+        for recommender, weight in self.recommenders:
+            if isinstance(recommender, AbstractRecommenderSystem):
+                cur_checked_appids = set()
+                
+                cur_recommendations = recommender.recommend(steamid, math.ceil(self._last_n * self.EXPAND_FURTHER))
+                # normalize the scores, only using max because there's going to be ratings below this current min
+                # when using the .score() method below
+                max_score = cur_recommendations["score"].max()
+                max_scores[recommender] = max_score
+                cur_recommendations["score"] = cur_recommendations["score"] / max_score
+                for appid, score in cur_recommendations[["appid", "score"]].values:
+                    if not appid in recommendations:
+                        recommendations[appid] = 0
+                    recommendations[appid] += score
+                    cur_checked_appids.add(appid)
+                checked_appids[recommender] = cur_checked_appids
+
+        
+        # Now we score the games some recommenders didn't recommend, plus score them with the AttributeScoringSystem
+        for appid in recommendations.keys():
+            for recommender, weight in self.recommenders:
+                if not appid in checked_appids[recommender]:
+                    if isinstance(recommender, AbstractRecommenderSystem):
+                        recommendations[appid] += (recommender.score(steamid, appid) / max_scores[recommender]) * weight
+                    elif isinstance(recommender, AttributeScoringSystem):
+                        # TODO: some way to see if the attribute scoring system goes from 0 to 1 
+                        recommendations[appid] += recommender.score(steamid, appid) * weight
+        return recommendations / sum([weight for _, weight in self.recommenders])
     
+    def score(self, steamid: int, appid: int) -> float:
+        score = 0
+        weight_total = 0
+        for recommender, weight in self.recommenders:
+            score += recommender.score(steamid, appid) * weight
+            weight_total += weight
+        return score / weight_total
+
+# TODO Game Details/Game Info based recommender system, idea: something like lite "Machine Learning", where each user has a "profile" of games they like, and the system recommends games based on that

@@ -22,7 +22,7 @@ user_sim = PearsonUserSimilarity(pgdata)
 pbr = PlaytimeBasedRecommenderSystem(pgdata, user_sim)
 pbr_recommendations = pbr.recommend(steamid, n=10, n_users=40)
 tag_sim = CosineGameTagSimilarity(game_tags=game_tags)
-tbr = TagBasedRecommenderSystem(pgdata, tag_sim, 1)
+tbr = GameTagsRecommenderSystem(pgdata, tag_sim, 1)
 tbr_recommendations = tbr.recommend(steamid, n=50)
 
 print("\n\nAvailable data: game_details (GameDetails), pgdata (PlayerGamesPlaytimeData), rand (RandomRecommenderSystem), pbr (PlaytimeBasedRecommenderSystem), user_sim (UserSimilarity), tag_sim (GameTagSimilarity), tbr (TagBasedRecommenderSystem), game_info (GameInfo), game_categories (GameCategories), game_developers_publishers (GameDevelopersPublishers), game_genres (GameGenres), game_tags (GameTags)\n")

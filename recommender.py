@@ -61,6 +61,24 @@ class AbstractRecommenderData(ABC):
         """
         pass
 
+    def get_minhash_similar_games(self, user_minhash, length):
+        """
+        Description:
+        ---
+        Gets the most similar games to the user's minhash using MinHashLSHEnsemble.
+
+        Args:
+        ---
+        * user_minhash (datasketch.MinHash): The MinHash of the user's games
+        * length (int): The number of items in the minhash
+
+        Returns:
+        ---
+        * List[Tuple[int, float]]: A list of tuples of the form (appid, similarity)
+        """
+        results = self.lshensemble.query(user_minhash, length)
+        return results
+
 class PlayerGamesPlaytime(AbstractRecommenderData):
     pickle_name_fmt = "PGPTData/{}_thres{}_per{}par{}"
     def __init__(self, filename: str, playtime_normalizer: AbstractPlaytimeNormalizer, threshold=0.8, num_perm=128, num_part=32):
@@ -899,6 +917,10 @@ class AbstractSimilarity(ABC):
         """
         pass
 class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only used to check if a class is of type "app similarity"
+    def __init__(self, recommender_data: AbstractRecommenderData) -> None:
+        self.user_item_weights = {}
+        self.recommender_data = recommender_data
+
     @abstractmethod
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -934,6 +956,28 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         pass
 
+    def get_minhash_similar_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+        """
+        Description:
+        ---
+        Gets the games similar to the given user, only taking into account the tags.
+
+        Args:
+        ---
+        user_games (DataFrame): The games played by the user
+
+        Returns:
+        ---
+        Tuple[List[int], Dict[int, float]]: A tuple containing a list of the appids of the games and a dictionary containing the weights of the tags
+        """
+        user_minhash = MinHash(self.recommender_data.minhash_num_perm, hashfunc=trivial_hash)
+        steamid = user_games.iloc[0]["steamid"]
+        user_weights = self.generate_item_weights(user_games) if steamid not in self.user_item_weights else self.user_item_weights[steamid]
+        
+        user_minhash.update_batch(user_weights.keys())
+        similar_games = self.recommender_data.get_minhash_similar_games(user_minhash, GameTags.MAX_LENGTH)  # TODO CHANGE THIS ASAP
+        return similar_games, user_weights
+
     @abstractmethod
     def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
         """
@@ -950,6 +994,25 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         List[int, float]: The items for the game with their weights (1 if not weighted)
         """
         pass
+
+    def generate_item_weights(self, user_games: DataFrame):
+        item_weight = {}
+        
+        # game_tags = self.game_tags.get_weighted_tags_for_list(user_games["appid"].values)
+        for steamid, row in user_games.iterrows():
+            appid = row["appid"]
+            pseudorating = row["playtime_forever"]
+            for tagid, weight in self.get_game_items(appid):
+                if not tagid in item_weight:
+                    item_weight[tagid] = 0
+                item_weight[tagid] += weight * pseudorating
+        # pick the top 19 tags
+        item_weight = sorted(item_weight.items(), key=lambda x: x[1], reverse=True)
+        item_weight = item_weight[:GameTags.MAX_LENGTH]  # TODO CHANGE THIS ASAP
+        item_weight = dict(item_weight)
+        self.user_item_weights[steamid] = item_weight
+        logging.debug(f"Tag weights for user {steamid}: " + "\r\n".join([f"{self.game_tags.get_tag_name(tagid)}: {weight:.2f}" for tagid, weight in item_weight.items()]))
+        return item_weight
 
 class RawUserSimilarity(AbstractSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime) -> None:
@@ -1207,11 +1270,11 @@ class PearsonUserSimilarity(RawUserSimilarity):
         return total_score / denominator if denominator != 0 else 0
 
 class RawGameTagSimilarity(AbstractGameSimilarity):
-    def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
-        super().__init__()
-        if game_info is None and game_tags is None:
+    def __init__(self, game_tags_or_game_info: Union[GameTags, GameInfo]) -> None:
+        if not game_tags_or_game_info:
             raise ValueError("game_info or game_tags must be set to use this similarity function")
-        self.game_tags = game_tags if game_tags is not None else game_info.game_tags
+        self.game_tags = game_tags_or_game_info if isinstance(game_tags_or_game_info, GameTags) else game_tags_or_game_info.game_tags
+        super().__init__(self.game_tags)
 
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -1268,7 +1331,7 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
             similar_games.append((candidate_appid, similarity))
         logging.info(f"Finished finding {n} similar games to {appid}")
         return pd.DataFrame(reversed(similar_games), columns=["appid", "similarity"])
-    
+
     def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
         """
         Description:
@@ -1286,8 +1349,8 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         return list(self.game_tags.get_tags(appid).items())
 
 class CosineGameTagSimilarity(RawGameTagSimilarity):
-    def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
-        super().__init__(game_tags, game_info)
+    def __init__(self, game_tags_or_game_info: Union[GameTags, GameInfo]) -> None:
+        super().__init__(game_tags_or_game_info)
         # NOTE: We don't need to precompute game tag norms because at most a game has 19 tags
         # and thus the overhead of accessing the norm through a dictionary is higher than
         # just computing it on the fly
@@ -1323,8 +1386,8 @@ class CosineGameTagSimilarity(RawGameTagSimilarity):
         return similarity / (own_norm * other_norm) ** 0.5
 
 class PearsonGameTagSimilarity(RawGameTagSimilarity):
-    def __init__(self, game_tags: GameTags = None, game_info: GameInfo = None) -> None:
-        super().__init__(game_tags, game_info)
+    def __init__(self, game_tags_or_game_info: Union[GameTags, GameInfo]) -> None:
+        super().__init__(game_tags_or_game_info)
         # NOTE: We don't need to precompute game tag norms and means because at most 
         # a game has 19 tags and thus the overhead of accessing the norm through
         # a dictionary is higher than just computing it on the fly
@@ -1367,11 +1430,9 @@ class PearsonGameTagSimilarity(RawGameTagSimilarity):
         return similarity / (own_norm * other_norm) ** 0.5
 
 class GameCategoriesSimilarity(AbstractGameSimilarity):
-    def __init__(self, game_categories: GameCategories = None, game_info: GameInfo = None) -> None:
-        super().__init__()
-        if game_info is None and game_categories is None:
-            raise ValueError("game_info or game_categories must be set to use this similarity function")
-        self.game_categories = game_categories if game_categories is not None else game_info.game_categories
+    def __init__(self, game_categories_or_game_info: Union[GameCategories, GameInfo] = None):
+        self.game_categories = game_categories_or_game_info if isinstance(game_categories_or_game_info, GameCategories) else game_categories_or_game_info.game_categories
+        super().__init__(self.game_categories)
 
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -1432,12 +1493,10 @@ class GameCategoriesSimilarity(AbstractGameSimilarity):
         return sorted(similarities, key=lambda x: x[1], reverse=True)[:n]
 
 class GameGenresSimilarity(AbstractGameSimilarity):
-    def __init__(self, game_genres: GameGenres = None, game_info: GameInfo = None) -> None:
-        super().__init__()
-        if game_info is None and game_genres is None:
-            raise ValueError("game_info or game_genres must be set to use this similarity function")
-        self.game_genres = game_genres if game_genres is not None else game_info.game_genres
-        
+    def __init__(self, game_genres_or_game_info: Union[GameGenres, GameInfo] = None):
+        self.game_genres = game_genres_or_game_info if isinstance(game_genres_or_game_info, GameGenres) else game_genres_or_game_info.game_genres
+        super().__init__(self.game_genres)
+
     def similarity(self, appid: int, other: int) -> float:
         """
         Description:
@@ -1504,10 +1563,10 @@ class GameGenresSimilarity(AbstractGameSimilarity):
 
 class GameDevelopersSimilarity(AbstractGameSimilarity):
     def __init__(self, game_developers_or_game_info: Union[GameDevelopers, GameInfo]) -> None:
-        super().__init__()
         if not isinstance(game_developers_or_game_info, (GameDevelopers, GameInfo)):
             raise ValueError("game_developers_or_game_info must be of type GameDevelopers or GameInfo")
         self.game_developers = game_developers_or_game_info if isinstance(game_developers_or_game_info, GameDevelopers) else game_developers_or_game_info.game_developers
+        super().__init__(self.game_developers)
 
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -1572,10 +1631,10 @@ class GameDevelopersSimilarity(AbstractGameSimilarity):
 
 class GamePublishersSimilarity(AbstractGameSimilarity):
     def __init__(self, game_publishers_or_game_info: Union[GamePublishers, GameInfo]) -> None:
-        super().__init__()
         if not isinstance(game_publishers_or_game_info, (GamePublishers, GameInfo)):
             raise ValueError("game_publishers_or_game_info must be of type GamePublishers or GameInfo")
         self.game_publishers = game_publishers_or_game_info if isinstance(game_publishers_or_game_info, GamePublishers) else game_publishers_or_game_info.game_publishers
+        super().__init__(self.game_publishers)
 
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -1640,8 +1699,7 @@ class GamePublishersSimilarity(AbstractGameSimilarity):
 class GameDetailsSimilarity(AbstractGameSimilarity):
     def __init__(
             self,
-            game_details: GameDetails = None,
-            game_info: GameInfo = None,
+            game_details_or_game_info: Union[GameDetails, GameInfo],
             weight_name: float = 1.0,
             weight_required_age: float = 1.0,
             weight_is_free: float = 1.0,
@@ -1655,11 +1713,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
             weight_release_date: float = 1.0,  # "I only like fresh games" / "old games were better"
             weight_coming_soon: float = 1.0
         ) -> None:
-        super().__init__()
-        self.game_info = game_info
-        self.game_details = game_details
-        if self.game_info is None and self.game_details is None:
-            raise ValueError("game_info or game_details must be set to use this similarity function")
+        self.game_details = game_details_or_game_info if isinstance(game_details_or_game_info, GameDetails) else game_details_or_game_info.game_details
         self.weights = {
             "name": weight_name,
             "required_age": weight_required_age,
@@ -1674,10 +1728,8 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
             "release_date": weight_release_date,
             "coming_soon": weight_coming_soon
         }
-        if self.game_details is not None:
-            self.rating_multiplier = self.game_details.rating_multiplier
-        elif self.game_info is not None:
-            self.rating_multiplier = self.game_info.game_details.rating_multiplier
+        self.rating_multiplier = self.game_details.rating_multiplier
+        super().__init__(self.game_info)
     
     def set_weights(self,
                     weight_name: float = -1.0,
@@ -1738,12 +1790,9 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         ---
         float: The similarity between the two games, from 0 to 1
         """
-        if self.game_info is not None:
-            details = self.game_info.get_game(appid)
-            other_details = self.game_info.get_game(other)
-        elif self.game_details is not None:
-            details = self.game_details.get_game(appid)
-            other_details = self.game_details.get_game(other)
+    
+        details = self.game_details.get_game(appid)
+        other_details = self.game_details.get_game(other)
         similarity = 0.0
         similarity += difflib.SequenceMatcher(None, details.name, other_details.name).ratio() * self.weights["name"] if self.weights["name"] > 0 else 0.0
         similarity += (1.0 - (abs(details.required_age - other_details.required_age) / 18.0)) * self.weights["required_age"] if self.weights["required_age"] > 0 else 0.0
@@ -1766,14 +1815,13 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
 
         return similarity / sum(self.weights.values())
 
-class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity):
+class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity): # TODO unused, maybe remove
     def __init__(self, game_similarities: List[Tuple[AbstractGameSimilarity, float]]) -> None:
         """
         Args:
         ---
             game_similarities (List[Tuple[AbstractGameSimilarity, float]]): A list of tuples containing the game similarity class and its weight
         """
-        super().__init__()
         self.game_similarities = game_similarities
         # check if they're all game similarities and precompute the sum of the weights
         self.weights_sum = 0.0
@@ -1781,6 +1829,7 @@ class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity):
             if not isinstance(game_similarity, AbstractGameSimilarity):
                 raise TypeError(game_similarity.__class__.__name__ + " is not an instance of" + AbstractGameSimilarity.__name__)
             self.weights_sum += weight
+        super().__init__(None)
     
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -2010,7 +2059,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
 
-class GameTagsRecommenderSystem(AbstractRecommenderSystem):
+class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: RawGameTagSimilarity, perfect_match_weight = 0.2):
         """
         Description
@@ -2034,10 +2083,9 @@ class GameTagsRecommenderSystem(AbstractRecommenderSystem):
         if not isinstance(game_similarity, RawGameTagSimilarity):
             raise TypeError(game_similarity.__class__.__name__ + " is not an instance of" + RawGameTagSimilarity.__name__)
         self.game_similarity = game_similarity
-        self.game_tags = self.game_similarity.game_tags
+        self.recommender_data = self.game_similarity.recommender_data
         self.perfect_match_weight = perfect_match_weight
         self.score_results_from_top_games = {}
-        self.user_tag_weights = {}
 
     def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = True) -> DataFrame:
         """Gets the rough top n games from games similar to the top games of the user
@@ -2085,59 +2133,38 @@ class GameTagsRecommenderSystem(AbstractRecommenderSystem):
             return list(games.items())[:n]
     
     def generate_recommendations(self, steamid: int) -> Dict[int, float]:
-        user_minhash = MinHash(self.game_tags.minhash_num_perm, hashfunc=trivial_hash)
-
-        tag_weight = self.generate_tag_weights(steamid) if steamid not in self.user_tag_weights else self.user_tag_weights[steamid]
-        user_minhash.update_batch(tag_weight.keys())
+        similar_games, user_weights = self.game_similarity.get_minhash_similar_games(self.pgdata.get_user_games(steamid))
         games = {}
-        similar_games = self.game_tags.get_minhash_similar_games(user_minhash, GameTags.MAX_LENGTH)
         for appid in similar_games:
             similarity = 0
-            tags = self.game_tags.get_tags(appid)
+            items = self.game_similarity.get_game_items(appid)
             perfect_match = True
-            for tagid, weight in tags.items():
-                if tagid in tag_weight:
-                    similarity += weight * tag_weight[tagid]
+            for itemid, weight in items:
+                if itemid in user_weights:
+                    similarity += weight * user_weights[itemid]
                 else:
                     perfect_match = False
             games[appid] = similarity + perfect_match * (similarity * self.perfect_match_weight)
         
         return games
-    
-    def generate_tag_weights(self, steamid):
-        tag_weight = {}
-        user_games = self.pgdata.get_user_games(steamid)
-        
-        game_tags = self.game_tags.get_weighted_tags_for_list(user_games["appid"].values)
-        for appid, tags in game_tags.items():
-            pseudorating = self.pgdata.rating(steamid, appid)
-            for tagid, weight in tags.items():
-                if not tagid in tag_weight:
-                    tag_weight[tagid] = 0
-                tag_weight[tagid] += weight * pseudorating
-        # pick the top 19 tags
-        tag_weight = sorted(tag_weight.items(), key=lambda x: x[1], reverse=True)
-        tag_weight = tag_weight[:GameTags.MAX_LENGTH]
-        tag_weight = dict(tag_weight)
-        self.user_tag_weights[steamid] = tag_weight
-        logging.debug(f"Tag weights for user {steamid}: " + "\r\n".join([f"{self.game_tags.get_tag_name(tagid)}: {weight:.2f}" for tagid, weight in tag_weight.items()]))
-        return tag_weight
 
     def score(self, steamid: int, appid: int) -> float:
         if steamid in self.score_results:
             return super().score(steamid, appid)
         else:
-            game_tags = self.game_tags.get_tags(appid)
-            if game_tags is None:
+            game_items = self.game_similarity.get_game_items(appid)
+            if game_items is None:
                 return 0
-            if not steamid in self.user_tag_weights:
-                _ = self.generate_tag_weights(steamid)
-            user_tag_weights = self.user_tag_weights[steamid]
+            ###  # TODO abstract this a bit
+            if not steamid in self.game_similarity.user_item_weights: 
+                _ = self.game_similarity.generate_item_weights(self.pgdata.get_user_games(steamid))
+            user_item_weights = self.game_similarity.user_item_weights[steamid]
+            ### 
             similarity = 0
             perfect_match = True
-            for tagid, weight in game_tags.items():
-                if tagid in user_tag_weights:
-                    similarity += weight * user_tag_weights[tagid]
+            for tagid, weight in game_items:
+                if tagid in user_item_weights:
+                    similarity += weight * user_item_weights[tagid]
                 else:
                     perfect_match = False
             return similarity + perfect_match * (similarity * self.perfect_match_weight)
@@ -2269,8 +2296,8 @@ class AttributeScoringSystem:
                 perfect_match = False
         # TODO: the "perfect_match_weight" is not really a weight, but a penalization
         return score - (not perfect_match) * (score * self.non_perfect_match_penalization) / sum(self.user_maps[steamid].values())
-        
-class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
+
+class HybridRecommenderSystem(AbstractRecommenderSystem):
     EXPAND_FURTHER = 1.5
     def __init__(self, *args: List[Tuple[Union[AttributeScoringSystem, AbstractRecommenderSystem], float]], **kwargs):
         # first check if the first arg is PlayerGamesPlaytime

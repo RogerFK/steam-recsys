@@ -22,8 +22,8 @@ pgdata = PlayerGamesPlaytime('data/player_games_subset.csv', LogPlaytimeNormaliz
 user_sim = PearsonUserSimilarity(pgdata)
 pbr = PlaytimeBasedRecommenderSystem(pgdata, user_sim)
 pbr_recommendations = pbr.recommend(steamid, n=10, n_users=40)
-tag_sim = CosineGameTagSimilarity(game_tags=game_tags)
-tbr = GameTagsRecommenderSystem(pgdata, tag_sim, 1)
+tag_sim = CosineGameTagSimilarity(game_tags)
+tbr = ContentBasedRecommenderSystem(pgdata, tag_sim, 1)
 tbr_recommendations = tbr.recommend(steamid, n=50)
 # gdet_sim = GameDetailsSimilarity(game_details) TODO: fix this
 ggen_sim = GameGenresSimilarity(game_genres)
@@ -35,7 +35,7 @@ ggen_atrib = AttributeScoringSystem(pgdata, ggen_sim, non_perfect_match_penaliza
 gcat_atrib = AttributeScoringSystem(pgdata, gcat_sim, non_perfect_match_penalization=0.001)
 gdev_atrib = AttributeScoringSystem(pgdata, gdev_sim)
 gpub_atrib = AttributeScoringSystem(pgdata, gpub_sim)
-cbr = ContentBasedRecommenderSystem(pgdata, (pbr, 3), (tbr, 3), (gdev_atrib, 1), (gpub_atrib, 0.5), (ggen_atrib, 1), (gcat_atrib, 1))
+cbr = HybridRecommenderSystem(pgdata, (pbr, 3), (tbr, 3), (gdev_atrib, 1), (gpub_atrib, 0.5), (ggen_atrib, 1), (gcat_atrib, 1))
 cbr_recommendations = cbr.recommend(steamid, n=50)
 
 print("\n\nAvailable data: game_details (GameDetails), pgdata (PlayerGamesPlaytimeData), rand (RandomRecommenderSystem), pbr (PlaytimeBasedRecommenderSystem), user_sim (UserSimilarity), tag_sim (GameTagSimilarity), tbr (TagBasedRecommenderSystem), game_info (GameInfo), game_categories (GameCategories), game_developers_publishers (GameDevelopersPublishers), game_genres (GameGenres), game_tags (GameTags), gdet_sim (GameDetailsSimilarity), ggen_sim (GameGenresSimilarity), gcat_sim (GameCategoriesSimilarity), gdevpub_sim (GameDeveloperPublisherSimilarity), gdet_atrib (AttributeScoringSystem), ggen_atrib (AttributeScoringSystem), gcat_atrib (AttributeScoringSystem), gdev_atrib (AttributeScoringSystem), gpub_atrib, cbr (ContentBasedRecommenderSystem)\n")

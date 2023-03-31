@@ -576,27 +576,20 @@ class GameCategories(AbstractRecommenderData):
         game_categories.reset_index(drop=True, inplace=True)
         return set(game_categories["categoryid"].values)
 
-class GameDevelopersPublishers(AbstractRecommenderData):
-    def __init__(self, gd_csv_filename: str, gp_csv_filename: str):
-        pickle_filename = "game_developers_publishers"
+class GameDevelopers(AbstractRecommenderData):
+    def __init__(self, gd_csv_filename: str):
+        pickle_filename = "game_developers"
         super().__init__(gd_csv_filename, pickle_filename)
         if self.processed_data is not None:
-            self.gd_data = self.processed_data["gd_data"]
-            self.gp_data = self.processed_data["gp_data"]
+            self.data = self.processed_data
             return
-        self.gd_data = self.data
-        super().__init__(gp_csv_filename, None)
-        self.gp_data = self.data
-        self.processed_data = {
-            "gd_data": self.gd_data,
-            "gp_data": self.gp_data,
-        }
+        self.processed_data = self.data
         with open(f"bin_data/{pickle_filename}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
     
-    def validate_gd_data(self, data: DataFrame):
+    def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
             raise TypeError("data must be a pandas DataFrame")
         if not "appid" in data.columns:
@@ -604,15 +597,22 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         if not "developerid" in data.columns:
             raise ValueError("data must have a 'developerid' column")
     
-    def validate_gp_data(self, data: DataFrame):
-        if not isinstance(data, DataFrame):
-            raise TypeError("data must be a pandas DataFrame")
-        if not "appid" in data.columns:
-            raise ValueError("data must have a 'appid' column")
-        if not "developerid" in data.columns:
-            raise ValueError("data must have a 'publisherid' column")
+    def get_developers(self, appid: int) -> Set[int]:
+        """Gets the developers a game has.
 
-    def rating_dev(self, appid, developer) -> float:
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Set[int]: The developers the game has
+        """
+        game_developers = self.data.loc[self.data["appid"] == appid]
+        game_developers.reset_index(drop=True, inplace=True)
+        return set(game_developers["developerid"].values)
+    
+    def rating(self, appid, developer) -> float:
         """
         Description:
         ---
@@ -627,10 +627,45 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         ---
         * float: Their "rating" for the game
         """
-        vals = self.gd_data.loc[(self.gd_data["appid"] == appid) & (self.gd_data["developerid"] == developer)].values
+        vals = self.data.loc[(self.data["appid"] == appid) & (self.data["developerid"] == developer)].values
         return 0.0 if len(vals) == 0 else 1.0
     
-    def rating_pub(self, appid, publisher) -> float:
+class GamePublishers(AbstractRecommenderData):
+    def __init__(self, csv_filename: str, pickle_filename: str = None):
+        super().__init__(csv_filename, pickle_filename)
+        if self.processed_data is not None:
+            self.data = self.processed_data
+            return
+        self.processed_data = self.data
+        with open(f"bin_data/{pickle_filename}.pickle", "wb") as f:
+            logging.info("Dumping LSH Ensemble and data...")
+            pickle.dump(self.processed_data, f)
+            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+    
+    def validate_data(self, data: DataFrame):
+        if not isinstance(data, DataFrame):
+            raise TypeError("data must be a pandas DataFrame")
+        if not "appid" in data.columns:
+            raise ValueError("data must have a 'appid' column")
+        if not "publisherid" in data.columns:
+            raise ValueError("data must have a 'publisherid' column")
+        
+    def get_publishers(self, appid: int) -> Set[int]:
+        """Gets the publishers a game has.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        Set[int]: The publishers the game has
+        """
+        game_publishers = self.data.loc[self.data["appid"] == appid]
+        game_publishers.reset_index(drop=True, inplace=True)
+        return set(game_publishers["publisherid"].values)
+    
+    def rating(self, appid, publisher) -> float:
         """
         Description:
         ---
@@ -645,58 +680,9 @@ class GameDevelopersPublishers(AbstractRecommenderData):
         ---
         * float: Their "rating" for the game
         """
-        vals = self.gp_data.loc[(self.gp_data["appid"] == appid) & (self.gp_data["publisherid"] == publisher)].values
+        vals = self.data.loc[(self.data["appid"] == appid) & (self.data["publisherid"] == publisher)].values
         return 0.0 if len(vals) == 0 else 1.0
-    
-    def get_developers(self, appid: int) -> Set[int]:
-        """Gets the developers a game has.
 
-        Args:
-        ---
-        appid (int): The appid of the game
-
-        Returns:
-        ---
-        Set[int]: The developers the game has
-        """
-        game_developers = self.gd_data.loc[self.gd_data["appid"] == appid]
-        game_developers.reset_index(drop=True, inplace=True)
-        return set(game_developers["developerid"].values)
-    
-    def get_publishers(self, appid: int) -> Set[int]:
-        """Gets the publishers a game has.
-
-        Args:
-        ---
-        appid (int): The appid of the game
-
-        Returns:
-        ---
-        Set[int]: The publishers the game has
-        """
-        game_publishers = self.gp_data.loc[self.gp_data["appid"] == appid]
-        game_publishers.reset_index(drop=True, inplace=True)
-        return set(game_publishers["publisherid"].values)
-    
-    def rating(self, appid, developer, publisher) -> float:
-        """
-        Description:
-        ---
-        If a game has a developer and publisher, it is rated 1.0, otherwise if only one of them is present, it is rated 0.5, otherwise 0.0.
-
-        Args:
-        ---
-        * appid (int): the appid of the game
-        * developer (int): the developerid of the developer
-        * publisher (int): the publisherid of the publisher
-
-        Returns:
-        ---
-        * float: 1.0 if the game has the developer and publisher, 0.5 if only one of them is present, 0.0 otherwise
-        """
-        dev = self.rating_dev(appid, developer) / 2.0
-        pub = self.rating_pub(appid, publisher) / 2.0
-        return dev + pub
 
 class GameDetails(AbstractRecommenderData):
     class GameWithOnlyDetails:
@@ -818,10 +804,11 @@ class Game(GameDetails.GameWithOnlyDetails):
 
 class GameInfo():
     # this class just encapsulates everything else to generate Game objects
-    def __init__(self, game_details: GameDetails, game_categories: GameCategories, game_developers_publishers: GameDevelopersPublishers, game_genres: GameGenres, game_tags: GameTags):
+    def __init__(self, game_details: GameDetails, game_categories: GameCategories, game_developers: GameDevelopers, game_publishers: GamePublishers, game_genres: GameGenres, game_tags: GameTags):
         self.game_details = game_details
         self.game_categories = game_categories
-        self.game_developers_publishers = game_developers_publishers
+        self.game_developers = game_developers
+        self.game_publishers = game_publishers
         self.game_genres = game_genres
         self.game_tags = game_tags
     
@@ -841,8 +828,8 @@ class GameInfo():
         """
         appid = row["appid"]
         game_categories = self.game_categories.get_categories(appid)
-        game_developers = self.game_developers_publishers.get_developers(appid)
-        game_publishers = self.game_developers_publishers.get_publishers(appid)
+        game_developers = self.game_developers.get_developers(appid)
+        game_publishers = self.game_publishers.get_publishers(appid)
         game_genres = self.game_genres.get_genres(appid)
         game_tags = self.game_tags.get_tags(appid)
         return Game(row, game_categories, game_developers, game_publishers, game_genres, game_tags)
@@ -1379,7 +1366,7 @@ class PearsonGameTagSimilarity(RawGameTagSimilarity):
                 similarity += (weight - own_mean) * (other_tags[tagid] - other_mean)
         return similarity / (own_norm * other_norm) ** 0.5
 
-class GameCategorySimilarity(AbstractGameSimilarity):
+class GameCategoriesSimilarity(AbstractGameSimilarity):
     def __init__(self, game_categories: GameCategories = None, game_info: GameInfo = None) -> None:
         super().__init__()
         if game_info is None and game_categories is None:
@@ -1421,8 +1408,30 @@ class GameCategorySimilarity(AbstractGameSimilarity):
         List[Tuple[int, float]]: A list of tuples containing the categoryid and weight of the categories of the game
         """
         return [(category, 1) for category in self.game_categories.get_categories(appid)]
+    
+    def get_similar_games(self, appid: int, n: int) -> List[Tuple[int, float]]:
+        """
+        Description:
+        ---
+        Gets the n most similar games to the given game.
 
-class GameGenreSimilarity(AbstractGameSimilarity):
+        Args:
+        ---
+        appid (int): The appid of the game
+        n (int): The number of games to return
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: A list of tuples containing the appid and similarity of the n most similar games
+        """
+        categories = self.game_categories.get_categories(appid)
+        similarities = []
+        for other in self.game_categories.get_lsh_similar_games(appid):
+            other_categories = self.game_categories.get_categories(other)
+            similarities.append((other, len(categories.intersection(other_categories)) / len(categories.union(other_categories))))
+        return sorted(similarities, key=lambda x: x[1], reverse=True)[:n]
+
+class GameGenresSimilarity(AbstractGameSimilarity):
     def __init__(self, game_genres: GameGenres = None, game_info: GameInfo = None) -> None:
         super().__init__()
         if game_info is None and game_genres is None:
@@ -1465,43 +1474,42 @@ class GameGenreSimilarity(AbstractGameSimilarity):
         """
         return [(genre, 1) for genre in self.game_genres.get_genres(appid)]
     
-class GameDeveloperPublisherSimilarity(AbstractGameSimilarity):
-    def __init__(self, game_developers_publishers: GameDevelopersPublishers = None, game_info: GameInfo = None) -> None:
-        super().__init__()
-        self.game_info = game_info
-        self.game_developers_publishers = game_developers_publishers
-        if self.game_info is None and self.game_developers_publishers is None:
-            raise ValueError("game_info or game_developers_publishers must be set to use this similarity function")
-
-    def similarity(self, appid: int, other: int) -> float:
+    def get_similar_games(self, appid: int, n: int) -> List[Tuple[int, float]]:
         """
         Description:
         ---
-        Computes the Jaccard similarity between two games, only taking into account the developers and publishers.
+        Gets the n most similar games to the given game, only taking into account the genres.
 
         Args:
         ---
         appid (int): The appid of the game
-        other (int): The appid of the game to compare to
+        n (int): The number of games to return
 
         Returns:
         ---
-        float: The similarity between the two games
+        List[Tuple[int, float]]: A list of tuples containing the appid and similarity of the n most similar games
         """
-        if self.game_info is not None:
-            developers = self.game_info.get_game(appid).developers
-            publishers = self.game_info.get_game(appid).publishers
-            other_developers = self.game_info.get_game(other).developers
-            other_publishers = self.game_info.get_game(other).publishers
-        elif self.game_developers_publishers is not None:
-            developers = self.game_developers_publishers.get_developers(appid)
-            publishers = self.game_developers_publishers.get_publishers(appid)
-            other_developers = self.game_developers_publishers.get_developers(other)
-            other_publishers = self.game_developers_publishers.get_publishers(other)
-        
-        return len(developers.intersection(other_developers)) / len(developers.union(other_developers)) + len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
-    
-    def similarity_dev(self, appid: int, other: int) -> float:
+        genres = self.game_genres.get_genres(appid)
+        if len(genres) == 0:
+            return []
+        similarities = []
+        for other in self.game_genres.get_lsh_similar_games(appid):
+            other_genres = self.game_genres.get_genres(other)
+            if len(other_genres) == 0:
+                continue
+            similarity = len(genres.intersection(other_genres)) / len(genres.union(other_genres))
+            similarities.append((other, similarity))
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:n]
+
+class GameDevelopersSimilarity(AbstractGameSimilarity):
+    def __init__(self, game_developers_or_game_info: Union[GameDevelopers, GameInfo]) -> None:
+        super().__init__()
+        if not isinstance(game_developers_or_game_info, (GameDevelopers, GameInfo)):
+            raise ValueError("game_developers_or_game_info must be of type GameDevelopers or GameInfo")
+        self.game_developers = game_developers_or_game_info if isinstance(game_developers_or_game_info, GameDevelopers) else game_developers_or_game_info.game_developers
+
+    def similarity(self, appid: int, other: int) -> float:
         """
         Description:
         ---
@@ -1516,16 +1524,60 @@ class GameDeveloperPublisherSimilarity(AbstractGameSimilarity):
         ---
         float: The similarity between the two games
         """
-        if self.game_info is not None:
-            developers = self.game_info.get_game(appid).developers
-            other_developers = self.game_info.get_game(other).developers
-        elif self.game_developers_publishers is not None:
-            developers = self.game_developers_publishers.get_developers(appid)
-            other_developers = self.game_developers_publishers.get_developers(other)
+        developers = self.game_developers.get_developers(appid)
+        other_developers = self.game_developers.get_developers(other)
         
         return len(developers.intersection(other_developers)) / len(developers.union(other_developers))
     
-    def similarity_pub(self, appid: int, other: int) -> float:
+    def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
+        """
+        Description:
+        ---
+        Gets the developers of a game.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: A list of tuples containing the developerid and weight of the developers of the game
+        """
+        return [(developer, 1) for developer in self.game_developers.get_developers(appid)]
+    
+    def get_similar_games(self, appid: int, n: int) -> List[Tuple[int, float]]:
+        """
+        Description:
+        ---
+        Gets the n most similar games to the given game, only taking into account the developers.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        n (int): The number of games to return
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: A list of tuples containing the appid and similarity of the n most similar games
+        """
+        developers = self.game_developers.get_developers(appid)
+        if len(developers) == 0:
+            return []
+        similarities = []
+        for other, other_developers in self.game_developers.get_games_from_developers(appid):  # TODO
+            similarity = len(developers.intersection(other_developers)) / len(developers.union(other_developers))
+            similarities.append((other, similarity))
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:n]
+
+class GamePublishersSimilarity(AbstractGameSimilarity):
+    def __init__(self, game_publishers_or_game_info: Union[GamePublishers, GameInfo]) -> None:
+        super().__init__()
+        if not isinstance(game_publishers_or_game_info, (GamePublishers, GameInfo)):
+            raise ValueError("game_publishers_or_game_info must be of type GamePublishers or GameInfo")
+        self.game_publishers = game_publishers_or_game_info if isinstance(game_publishers_or_game_info, GamePublishers) else game_publishers_or_game_info.game_publishers
+
+    def similarity(self, appid: int, other: int) -> float:
         """
         Description:
         ---
@@ -1540,15 +1592,51 @@ class GameDeveloperPublisherSimilarity(AbstractGameSimilarity):
         ---
         float: The similarity between the two games
         """
-        if self.game_info is not None:
-            publishers = self.game_info.get_game(appid).publishers
-            other_publishers = self.game_info.get_game(other).publishers
-        elif self.game_developers_publishers is not None:
-            publishers = self.game_developers_publishers.get_publishers(appid)
-            other_publishers = self.game_developers_publishers.get_publishers(other)
+        publishers = self.game_publishers.get_publishers(appid)
+        other_publishers = self.game_publishers.get_publishers(other)
         
         return len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
+    
+    def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
+        """
+        Description:
+        ---
+        Gets the publishers of a game.
 
+        Args:
+        ---
+        appid (int): The appid of the game
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: A list of tuples containing the publisherid and weight of the publishers of the game
+        """
+        return [(publisher, 1) for publisher in self.game_publishers.get_publishers(appid)]
+    
+    def get_similar_games(self, appid: int, n: int) -> List[Tuple[int, float]]:
+        """
+        Description:
+        ---
+        Gets the n most similar games to the given game, only taking into account the publishers.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        n (int): The number of games to return
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: A list of tuples containing the appid and similarity of the n most similar games
+        """
+        publishers = self.game_publishers.get_publishers(appid)
+        if len(publishers) == 0:
+            return []
+        similarities = []
+        for other, other_publishers in self.game_publishers.get_games_from_publishers(appid):  # TODO
+            similarity = len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
+            similarities.append((other, similarity))
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        return similarities[:n]
 class GameDetailsSimilarity(AbstractGameSimilarity):
     def __init__(
             self,
@@ -1691,7 +1779,7 @@ class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity):
         self.weights_sum = 0.0
         for game_similarity, weight in self.game_similarities:
             if not isinstance(game_similarity, AbstractGameSimilarity):
-                raise TypeError( game_similarity.__class__.__name__ + " is not an instance of" + AbstractGameSimilarity.__name__)
+                raise TypeError(game_similarity.__class__.__name__ + " is not an instance of" + AbstractGameSimilarity.__name__)
             self.weights_sum += weight
     
     def similarity(self, appid: int, other: int) -> float:
@@ -1713,6 +1801,9 @@ class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity):
         for game_similarity, weight in self.game_similarities:
             similarity += game_similarity.similarity(appid, other) * weight
         return similarity / self.weights_sum
+    
+    def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
+        raise NotImplementedError(f"This method isn't available for {self.__class__.__name__}.")
 
 # Recommender systems #
 class AbstractRecommenderSystem(ABC):
@@ -1867,6 +1958,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, pgdata: PlayerGamesPlaytime, similarity: RawUserSimilarity):
         super().__init__(pgdata)
         self.similarity = similarity
+        self.score_results_for_n_users = {}
     
     def recommend(self, steamid: int, n: int = 10, n_users = 50, filter_owned=True) -> DataFrame:
         """
@@ -1887,6 +1979,9 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         Dict[int, float]: appid -> score, ordered by score, up to n items
         """
         self.n_users = n_users  # little hack to reuse code
+        if n_users not in self.score_results_for_n_users:
+            self.score_results_for_n_users[n_users] = {}
+        self.score_results = self.score_results_for_n_users[n_users]
         return super().recommend(steamid, n, filter_owned)
     
     def generate_recommendations(self, steamid: int) -> Dict[int, float]:
@@ -2178,7 +2273,11 @@ class AttributeScoringSystem:
 class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
     EXPAND_FURTHER = 1.5
     def __init__(self, *args: List[Tuple[Union[AttributeScoringSystem, AbstractRecommenderSystem], float]], **kwargs):
-        # first check if args are tuples of (AbstractRecommenderSystem, weight) or (AttributeScoringSystem, weight)
+        # first check if the first arg is PlayerGamesPlaytime
+        if isinstance(args[0], PlayerGamesPlaytime):
+            self.pgdata = args[0]
+            args = args[1:]
+        # then check if args are tuples of (AbstractRecommenderSystem, weight) or (AttributeScoringSystem, weight)
         for arg in args:
             if not isinstance(arg, tuple):
                 raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
@@ -2217,9 +2316,10 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
                 max_score = cur_recommendations["score"].max()
                 max_scores[recommender] = max_score
                 cur_recommendations["score"] = cur_recommendations["score"] / max_score
-                for appid, score in cur_recommendations[["appid", "score"]].values:
+                for appid, row in cur_recommendations.iterrows():
                     if not appid in recommendations:
                         recommendations[appid] = 0
+                    score = row["score"] * weight
                     recommendations[appid] += score
                     cur_checked_appids.add(appid)
                 checked_appids[recommender] = cur_checked_appids
@@ -2228,13 +2328,13 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         # Now we score the games some recommenders didn't recommend, plus score them with the AttributeScoringSystem
         for appid in recommendations.keys():
             for recommender, weight in self.recommenders:
-                if not appid in checked_appids[recommender]:
+                if recommender not in checked_appids or not appid in checked_appids[recommender]:
                     if isinstance(recommender, AbstractRecommenderSystem):
                         recommendations[appid] += (recommender.score(steamid, appid) / max_scores[recommender]) * weight
                     elif isinstance(recommender, AttributeScoringSystem):
-                        # TODO: some way to see if the attribute scoring system goes from 0 to 1 
                         recommendations[appid] += recommender.score(steamid, appid) * weight
-        return recommendations / sum([weight for _, weight in self.recommenders])
+        
+        return recommendations # / sum([weight for _, weight in self.recommenders])
     
     def score(self, steamid: int, appid: int) -> float:
         score = 0

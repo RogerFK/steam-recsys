@@ -410,6 +410,7 @@ class GameTags(AbstractRecommenderData):
 class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limited, so this is not very useful. Hence, we won't waste much time on it.
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
         super().__init__(csv_filename, "game_genres")
+        self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
             self.data = self.processed_data["data"]
@@ -417,7 +418,6 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
             return
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
-        self.minhash_num_perm = num_perm
         lsh_ensemble_index = []
         self.minhashes = {}
         logging.info("Computing MinHashes for each game...")
@@ -506,6 +506,7 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
 class GameCategories(AbstractRecommenderData):
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
         super().__init__(csv_filename, "game_categories")
+        self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
             self.data = self.processed_data["data"]
@@ -513,7 +514,6 @@ class GameCategories(AbstractRecommenderData):
             return
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
-        self.minhash_num_perm = num_perm
         lsh_ensemble_index = []
         self.minhashes = {}
         logging.info("Computing MinHashes for each game...")
@@ -647,6 +647,38 @@ class GameDevelopers(AbstractRecommenderData):
         """
         vals = self.data.loc[(self.data["appid"] == appid) & (self.data["developerid"] == developer)].values
         return 0.0 if len(vals) == 0 else 1.0
+
+    def get_games_from_developer(self, developerid: int) -> Set[int]:
+        """Gets the games a developer has made.
+
+        Args:
+        ---
+        developerid (int): The developerid of the developer
+
+        Returns:
+        ---
+        Set[int]: The games the developer has made
+        """
+        dev_games = self.data.loc[self.data["developerid"] == developerid]
+        dev_games.reset_index(drop=True, inplace=True)
+        return set(dev_games["appid"].values)
+    
+    def get_games_from_developers_of_game(self, appid) -> Dict[int, Set[int]]:
+        """Gets the games the developer/s of a game has made.
+
+        Args:
+        ---
+        developerid (int): The developerid of the developer
+
+        Returns:
+        ---
+        Set[int]: The games the developer has made
+        """
+        devids = self.get_developers(appid)
+        games = dict()
+        for devid in devids:
+            games[devid] = self.get_games_from_developer(devid)
+        return games
     
 class GamePublishers(AbstractRecommenderData):
     def __init__(self, csv_filename: str, pickle_filename: str = None):
@@ -700,6 +732,38 @@ class GamePublishers(AbstractRecommenderData):
         """
         vals = self.data.loc[(self.data["appid"] == appid) & (self.data["publisherid"] == publisher)].values
         return 0.0 if len(vals) == 0 else 1.0
+    
+    def get_games_from_publisher(self, publisherid: int) -> Set[int]:
+        """Gets the games a publisher has published.
+
+        Args:
+        ---
+        publisherid (int): The publisherid of the publisher
+
+        Returns:
+        ---
+        Set[int]: The games the publisher has published
+        """
+        pub_games = self.data.loc[self.data["publisherid"] == publisherid]
+        pub_games.reset_index(drop=True, inplace=True)
+        return set(pub_games["appid"].values)
+    
+    def get_games_from_publishers_of_game(self, appid) -> Dict[int, Set[int]]:
+        """Gets the games the publisher/s of a game has published.
+
+        Args:
+        ---
+        publisherid (int): The publisherid of the publisher
+
+        Returns:
+        ---
+        Set[int]: The games the publisher has published
+        """
+        pubids = self.get_publishers(appid)
+        games = dict()
+        for pubid in pubids:
+            games[pubid] = self.get_games_from_publisher(pubid)
+        return games
 
 
 class GameDetails(AbstractRecommenderData):
@@ -920,6 +984,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
     def __init__(self, recommender_data: AbstractRecommenderData) -> None:
         self.user_item_weights = {}
         self.recommender_data = recommender_data
+        self.item_weight_max_length = 0  # used to cull
 
     @abstractmethod
     def similarity(self, appid: int, other: int) -> float:
@@ -956,7 +1021,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         pass
 
-    def get_minhash_similar_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
         """
         Description:
         ---
@@ -972,10 +1037,10 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         user_minhash = MinHash(self.recommender_data.minhash_num_perm, hashfunc=trivial_hash)
         steamid = user_games.iloc[0]["steamid"]
-        user_weights = self.generate_item_weights(user_games) if steamid not in self.user_item_weights else self.user_item_weights[steamid]
+        user_weights = self.get_item_weights(user_games)
         
         user_minhash.update_batch(user_weights.keys())
-        similar_games = self.recommender_data.get_minhash_similar_games(user_minhash, GameTags.MAX_LENGTH)  # TODO CHANGE THIS ASAP
+        similar_games = self.recommender_data.get_minhash_similar_games(user_minhash, len(user_weights.keys()))
         return similar_games, user_weights
 
     @abstractmethod
@@ -995,24 +1060,40 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         pass
 
-    def generate_item_weights(self, user_games: DataFrame):
-        item_weight = {}
+    def get_item_weights(self, user_games: DataFrame) -> Dict[int, float]:
+        """Gets or generates the item weights for a user.
+
+        Args:
+            user_games (DataFrame): The games played by the user, with the playtime_forever column
+
+        Returns:
+            Dict[int, float]: The item weights for the user
+        """
+        steamid = user_games.iloc[0]["steamid"]
+        if steamid in self.user_item_weights: return self.user_item_weights[steamid]
         
-        # game_tags = self.game_tags.get_weighted_tags_for_list(user_games["appid"].values)
+        item_weight = {}
         for steamid, row in user_games.iterrows():
             appid = row["appid"]
             pseudorating = row["playtime_forever"]
-            for tagid, weight in self.get_game_items(appid):
-                if not tagid in item_weight:
-                    item_weight[tagid] = 0
-                item_weight[tagid] += weight * pseudorating
-        # pick the top 19 tags
+            for itemid, weight in self.get_game_items(appid):
+                if not itemid in item_weight:
+                    item_weight[itemid] = 0
+                item_weight[itemid] += self.weight_function(weight, pseudorating)
+
         item_weight = sorted(item_weight.items(), key=lambda x: x[1], reverse=True)
-        item_weight = item_weight[:GameTags.MAX_LENGTH]  # TODO CHANGE THIS ASAP
+        if self.item_weight_max_length > 1:
+            item_weight = item_weight[:self.item_weight_max_length]
+        
         item_weight = dict(item_weight)
         self.user_item_weights[steamid] = item_weight
-        logging.debug(f"Tag weights for user {steamid}: " + "\r\n".join([f"{self.game_tags.get_tag_name(tagid)}: {weight:.2f}" for tagid, weight in item_weight.items()]))
+        print(item_weight)
+        print(f"{item_weight.__class__.__name__}")
+        logging.debug(f"{self.__class__.__name__} weights for user {steamid}: " + "\r\n".join([f"{itemid}: {weight:.2f}" for itemid, weight in item_weight.items()]))
         return item_weight
+    
+    def weight_function(self, weight, pseudorating) -> float:
+        return weight * pseudorating
 
 class RawUserSimilarity(AbstractSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime) -> None:
@@ -1275,6 +1356,7 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
             raise ValueError("game_info or game_tags must be set to use this similarity function")
         self.game_tags = game_tags_or_game_info if isinstance(game_tags_or_game_info, GameTags) else game_tags_or_game_info.game_tags
         super().__init__(self.game_tags)
+        self.item_weight_max_length = GameTags.MAX_LENGTH
 
     def similarity(self, appid: int, other: int) -> float:
         """
@@ -1623,11 +1705,32 @@ class GameDevelopersSimilarity(AbstractGameSimilarity):
         if len(developers) == 0:
             return []
         similarities = []
-        for other, other_developers in self.game_developers.get_games_from_developers(appid):  # TODO
+        for other, other_developers in self.game_developers.get_games_from_developers_of_game(appid):
             similarity = len(developers.intersection(other_developers)) / len(developers.union(other_developers))
             similarities.append((other, similarity))
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:n]
+    
+    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+        """Gets similar games from the user's games, only taking into account the developers.
+
+        Args:
+        ---
+        user_games (DataFrame): The user's games
+
+        Returns:
+        ---
+        Tuple[List[int], Dict[int, float]]: A list of appids and a dictionary of developerids and their weight
+        """
+        user_weights = self.get_item_weights(user_games)
+        appid_scores = {}
+        for developer, weight in user_weights.items():
+            for appid in self.game_developers.get_games_from_developer(developer):
+                if appid not in appid_scores:
+                    appid_scores[appid] = 0
+                appid_scores[appid] += weight
+        appids = sorted(appid_scores, key=appid_scores.get, reverse=True)
+        return appids, user_weights
 
 class GamePublishersSimilarity(AbstractGameSimilarity):
     def __init__(self, game_publishers_or_game_info: Union[GamePublishers, GameInfo]) -> None:
@@ -1691,11 +1794,32 @@ class GamePublishersSimilarity(AbstractGameSimilarity):
         if len(publishers) == 0:
             return []
         similarities = []
-        for other, other_publishers in self.game_publishers.get_games_from_publishers(appid):  # TODO
+        for other, other_publishers in self.game_publishers.get_games_from_publishers_of_game(appid):  # TODO
             similarity = len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
             similarities.append((other, similarity))
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:n]
+    
+    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+        """Gets similar games from the user's games, only taking into account the publishers.
+
+        Args:
+        ---
+        user_games (DataFrame): The user's games
+
+        Returns:
+        ---
+        Tuple[List[int], Dict[int, float]]: A list of appids and a dictionary of publisherids and their weight
+        """
+        user_weights = self.get_item_weights(user_games)
+        appid_scores = {}
+        for publisher, weight in user_weights.items():
+            for appid in self.game_publishers.get_games_from_publisher(publisher):
+                if appid not in appid_scores:
+                    appid_scores[appid] = 0
+                appid_scores[appid] += weight
+        appids = sorted(appid_scores, key=appid_scores.get, reverse=True)
+        return appids, user_weights
 class GameDetailsSimilarity(AbstractGameSimilarity):
     def __init__(
             self,
@@ -1857,7 +1981,7 @@ class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity): # TODO unused,
 # Recommender systems #
 class AbstractRecommenderSystem(ABC):
     def __init__(self, pgdata: PlayerGamesPlaytime):
-        self.score_results = {}
+        self.score_results = {}  # steamid -> {appid: score}
         self.pgdata = pgdata
 
     def recommend(self, steamid: int, n: int = 10, filter_owned = True) -> DataFrame:
@@ -1876,7 +2000,7 @@ class AbstractRecommenderSystem(ABC):
         self.validate_steamid(steamid)
         self.validate_n(n)
 
-        logging.info(f"{self.__class__.__name__}: Getting top {n} games for {steamid}. Please wait...")
+        logging.info(f"{self.__repr__()}: Getting top {n} games for {steamid}. Please wait...")
         if steamid in self.score_results:
             games = self.score_results[steamid]
         else:
@@ -1947,7 +2071,7 @@ class AbstractRecommenderSystem(ABC):
         ---
         Generates recommendations for a user
         
-        NOTE: Recommendations are cached to be used in ContentBasedRecommenderSystem.score / ContentBasedRecommenderSystem.recommend
+        NOTE: Recommendations are cached to be used in HybridRecommenderSystem.score / HybridRecommenderSystem.recommend
 
         Args:
         ---
@@ -1968,8 +2092,8 @@ class AbstractRecommenderSystem(ABC):
     def validate_n(self, n: int):
         if not isinstance(n, int):
             raise TypeError("n must be an int")
-        if n < 1:
-            raise ValueError("n must be positive")
+        if n < 1 and n != -1:
+            raise ValueError("n must be positive or -1")
     
     def validate_appid(self, appid: int):
         if not isinstance(appid, int):
@@ -2015,7 +2139,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         ---
         Generates recommendations for a user
         
-        NOTE: Recommendations are cached to be used in ContentBasedRecommenderSystem.score / ContentBasedRecommenderSystem.recommend
+        NOTE: Recommendations are cached to be used in HybridRecommenderSystem.score / HybridRecommenderSystem.recommend
 
         Args:
         ---
@@ -2059,118 +2183,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
 
-class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
-    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: RawGameTagSimilarity, perfect_match_weight = 0.2):
-        """
-        Description
-        ---
-        Basic tag based recommender system
-
-        Args:
-        ---
-        * pgdata (PlayerGamesPlaytime): The PlayerGamesPlaytime object
-        * game_similarity (RawGameTagSimilarity): The game similarity object
-        * perfect_match_weight (float, optional): How much weight to give to perfect matches. Defaults to 0.2.
-
-        Raises:
-        ---
-        * TypeError: If game_similarity is not an instance of RawGameTagSimilarity, or if pgdata is not an instance of PlayerGamesPlaytime
-        """
-        super().__init__(pgdata)
-        if not isinstance(pgdata, PlayerGamesPlaytime):
-            raise TypeError(pgdata.__class__.__name__ + " is not an instance of" + PlayerGamesPlaytime.__name__)
-        self.pgdata = pgdata        
-        if not isinstance(game_similarity, RawGameTagSimilarity):
-            raise TypeError(game_similarity.__class__.__name__ + " is not an instance of" + RawGameTagSimilarity.__name__)
-        self.game_similarity = game_similarity
-        self.recommender_data = self.game_similarity.recommender_data
-        self.perfect_match_weight = perfect_match_weight
-        self.score_results_from_top_games = {}
-
-    def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = True) -> DataFrame:
-        """Gets the rough top n games from games similar to the top games of the user
-
-        Args:
-        ---
-        steamid (int): The steamid of the user
-        n (int, optional): The number of games to return. Defaults to 10. -1 for all
-        n_games (int, optional): The number of top games to use. Defaults to 20.
-        filter_owned (bool, optional): Whether to filter out games that the user already owns. Defaults to True.
-
-        Returns:
-        ---
-        list: A list of tuples (appid, similarity)
-        """
-        if steamid in self.score_results_from_top_games:
-            games = self.score_results_from_top_games[steamid]
-        else:
-            user_games = self.pgdata.get_user_games(steamid)
-            user_games = user_games.sort_values(by="playtime_forever", ascending=False)
-            user_games = user_games.head(n_games)
-            games = {}
-            for idx, row in user_games.iterrows():
-                _, appid, _ = row
-                appid = int(appid)
-                similar_games = self.game_similarity.get_similar_games(appid)
-                if similar_games is None:
-                    continue
-                for idx, row in similar_games.iterrows():
-                    other_appid, similarity = row
-                    other_appid = int(other_appid)
-                    if filter_owned and self.pgdata.rating(steamid, other_appid) > 0:
-                        continue
-                    if not other_appid in games:
-                        games[other_appid] = 0
-                    games[other_appid] += similarity
-            # sort games
-            games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
-            self.score_results_from_top_games[steamid] = games
-        
-        # get the top n games
-        if n == -1:
-            return games
-        else:
-            return list(games.items())[:n]
-    
-    def generate_recommendations(self, steamid: int) -> Dict[int, float]:
-        similar_games, user_weights = self.game_similarity.get_minhash_similar_games(self.pgdata.get_user_games(steamid))
-        games = {}
-        for appid in similar_games:
-            similarity = 0
-            items = self.game_similarity.get_game_items(appid)
-            perfect_match = True
-            for itemid, weight in items:
-                if itemid in user_weights:
-                    similarity += weight * user_weights[itemid]
-                else:
-                    perfect_match = False
-            games[appid] = similarity + perfect_match * (similarity * self.perfect_match_weight)
-        
-        return games
-
-    def score(self, steamid: int, appid: int) -> float:
-        if steamid in self.score_results:
-            return super().score(steamid, appid)
-        else:
-            game_items = self.game_similarity.get_game_items(appid)
-            if game_items is None:
-                return 0
-            ###  # TODO abstract this a bit
-            if not steamid in self.game_similarity.user_item_weights: 
-                _ = self.game_similarity.generate_item_weights(self.pgdata.get_user_games(steamid))
-            user_item_weights = self.game_similarity.user_item_weights[steamid]
-            ### 
-            similarity = 0
-            perfect_match = True
-            for tagid, weight in game_items:
-                if tagid in user_item_weights:
-                    similarity += weight * user_item_weights[tagid]
-                else:
-                    perfect_match = False
-            return similarity + perfect_match * (similarity * self.perfect_match_weight)
-
-
-class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
+class RatingBasedRecommenderSystem(AbstractRecommenderSystem): # TODO: Remove, AttributeScoringSystem is the same but better
     def __init__(self, game_details: GameDetails, pgdata: PlayerGamesPlaytime = None):
         """Description
         ---
@@ -2242,32 +2255,78 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
         float: The score of the game for the user
         """
         return self.score_results[appid]
-class AttributeScoringSystem:
-    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, non_perfect_match_penalization = 0):
-        self.pgdata = pgdata
-        self.game_similarity = game_similarity
-        self.non_perfect_match_penalization = non_perfect_match_penalization
-        self.user_maps = {} # steamid -> {appid: score}
-    
-    def generate_user_map(self, steamid: int):
+class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
+    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, perfect_match_weight = 0.2):
         """
         Description
         ---
-        Generates a map of 'itemid' -> 'score' for a user
+        Basic tag based recommender system
+
+        Args:
+        ---
+        * pgdata (PlayerGamesPlaytime): The PlayerGamesPlaytime object
+        * game_similarity (AbstractGameSimilarity): The game similarity object
+        * perfect_match_weight (float, optional): How much weight to give to perfect matches. Defaults to 0.2.
+
+        Raises:
+        ---
+        * TypeError: If game_similarity is not an instance of AbstractGameSimilarity, or if pgdata is not an instance of PlayerGamesPlaytime
+        """
+        super().__init__(pgdata)
+        if not isinstance(pgdata, PlayerGamesPlaytime):
+            raise TypeError(pgdata.__class__.__name__ + " is not an instance of " + PlayerGamesPlaytime.__name__)
+        self.pgdata = pgdata        
+        if not isinstance(game_similarity, AbstractGameSimilarity):
+            raise TypeError(game_similarity.__class__.__name__ + " is not an instance of " + AbstractGameSimilarity.__name__)
+        self.game_similarity = game_similarity
+        self.recommender_data = self.game_similarity.recommender_data
+        self.perfect_match_weight = perfect_match_weight
+        self.score_results_from_top_games = {}
+
+    def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = True) -> DataFrame:
+        """Gets the rough top n games from games similar to the top games of the user
 
         Args:
         ---
         steamid (int): The steamid of the user
-        """
-        user_games = self.pgdata.get_user_games(steamid)
-        user_map = {}
-        for appid in user_games["appid"].values:
-            for itemid, weight in self.game_similarity.get_game_items(appid):
-                if not itemid in user_map:
-                    user_map[itemid] = 0
-                user_map[itemid] += weight
+        n (int, optional): The number of games to return. Defaults to 10. -1 for all
+        n_games (int, optional): The number of top games to use. Defaults to 20.
+        filter_owned (bool, optional): Whether to filter out games that the user already owns. Defaults to True.
 
-        self.user_maps[steamid] = user_map
+        Returns:
+        ---
+        list: A list of tuples (appid, similarity)
+        """
+        if steamid in self.score_results_from_top_games:
+            games = self.score_results_from_top_games[steamid]
+        else:
+            user_games = self.pgdata.get_user_games(steamid)
+            user_games = user_games.sort_values(by="playtime_forever", ascending=False)
+            user_games = user_games.head(n_games)
+            games = {}
+            for idx, row in user_games.iterrows():
+                _, appid, _ = row
+                appid = int(appid)
+                similar_games = self.game_similarity.get_similar_games(appid)
+                if similar_games is None:
+                    continue
+                for idx, row in similar_games.iterrows():
+                    other_appid, similarity = row
+                    other_appid = int(other_appid)
+                    if filter_owned and self.pgdata.rating(steamid, other_appid) > 0:
+                        continue
+                    if not other_appid in games:
+                        games[other_appid] = 0
+                    games[other_appid] += similarity
+            # sort games
+            games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
+            self.score_results_from_top_games[steamid] = games
+        
+        # get the top n games
+        if n == -1:
+            return games
+        else:
+            return list(games.items())[:n]
 
     def score(self, steamid: int, appid: int) -> float:
         """
@@ -2284,9 +2343,9 @@ class AttributeScoringSystem:
         ---
         float: The score of the game for the user
         """
-        if not steamid in self.user_maps:
-            self.generate_user_map(steamid)
-        user_map = self.user_maps[steamid]
+        if not steamid in self.score_results:
+            self.game_similarity.get_item_weights(self.pgdata.get_user_games(steamid))
+        user_map = self.score_results[steamid]
         score = 0
         perfect_match = True
         for itemid, weight in self.game_similarity.get_game_items(appid):
@@ -2294,35 +2353,54 @@ class AttributeScoringSystem:
                 score += weight * user_map[itemid]
             else:
                 perfect_match = False
-        # TODO: the "perfect_match_weight" is not really a weight, but a penalization
-        return score - (not perfect_match) * (score * self.non_perfect_match_penalization) / sum(self.user_maps[steamid].values())
+        return score + (perfect_match) * (score * self.perfect_match_weight) / sum(self.score_results[steamid].values())
+
+    def generate_recommendations(self, steamid: int) -> Dict[int, float]:
+        similar_games, item_weights = self.game_similarity.get_similar_games_from_user_games(self.pgdata.get_user_games(steamid))
+        games = {}
+        for appid in similar_games:
+            score = 0
+            perfect_match = True
+            for itemid, weight in self.game_similarity.get_game_items(appid):
+                if itemid in item_weights:
+                    score += weight * item_weights[itemid]
+                else:
+                    perfect_match = False
+            games[appid] = score + (perfect_match) * (score * self.perfect_match_weight) / sum(item_weights.values())
+        
+        return games
+    
+    def __repr__(self) -> str:
+        return f"Recommender from {self.game_similarity.__class__.__name__}"
 
 class HybridRecommenderSystem(AbstractRecommenderSystem):
     EXPAND_FURTHER = 1.5
-    def __init__(self, *args: List[Tuple[Union[AttributeScoringSystem, AbstractRecommenderSystem], float]], **kwargs):
+    def __init__(self, *args: Tuple[AbstractRecommenderSystem, float]):
         # first check if the first arg is PlayerGamesPlaytime
         if isinstance(args[0], PlayerGamesPlaytime):
             self.pgdata = args[0]
             args = args[1:]
-        # then check if args are tuples of (AbstractRecommenderSystem, weight) or (AttributeScoringSystem, weight)
+        # then check if args are tuples of (AbstractRecommenderSystem, weight)
+        arg_count = 0
         for arg in args:
             if not isinstance(arg, tuple):
-                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
+                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem, weight)"
                                  f" (got {arg.__class__.__name__})")
-            if not isinstance(arg[0], (AbstractRecommenderSystem, AttributeScoringSystem)):
-                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
-                                 f" (got {arg[0].__class__.__name__} as the first item of a tuple)")
+            if not isinstance(arg[0], (AbstractRecommenderSystem)):
+                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem, weight)"
+                                 f" (got {arg[0].__class__.__name__} as the first item of a tuple in arg {arg_count})")
             if not isinstance(arg[1], (int, float)):
-                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem or AttributeScoringSystem, weight)"
-                                 f" (got {arg[1].__class__.__name__} as the second item of a tuple)")
+                raise ValueError("All arguments must be tuples of (AbstractRecommenderSystem, weight)"
+                                 f" (got {arg[1].__class__.__name__} as the second item of a tuple in arg {arg_count})")
+            arg_count += 1
+
         pgdata = None
         for arg in args:
-            if (isinstance(arg[0], AttributeScoringSystem) or isinstance(arg[0], AbstractRecommenderSystem)) and arg[0].pgdata is not None:
+            if arg[0].pgdata is not None:
                 pgdata = arg[0].pgdata
                 break
         super().__init__(pgdata)
         self.recommenders = args
-        self.kwargs = kwargs
 
     # little hack to get 'n' without changing generate_recommendations
     def recommend(self, steamid: int, n: int = 10, filter_owned=True) -> DataFrame:
@@ -2334,32 +2412,28 @@ class HybridRecommenderSystem(AbstractRecommenderSystem):
         checked_appids = {} # recommender -> set of appids checked
         max_scores = {} # recommender -> max score
         for recommender, weight in self.recommenders:
-            if isinstance(recommender, AbstractRecommenderSystem):
-                cur_checked_appids = set()
-                
-                cur_recommendations = recommender.recommend(steamid, math.ceil(self._last_n * self.EXPAND_FURTHER))
-                # normalize the scores, only using max because there's going to be ratings below this current min
-                # when using the .score() method below
-                max_score = cur_recommendations["score"].max()
-                max_scores[recommender] = max_score
-                cur_recommendations["score"] = cur_recommendations["score"] / max_score
-                for appid, row in cur_recommendations.iterrows():
-                    if not appid in recommendations:
-                        recommendations[appid] = 0
-                    score = row["score"] * weight
-                    recommendations[appid] += score
-                    cur_checked_appids.add(appid)
-                checked_appids[recommender] = cur_checked_appids
+            cur_checked_appids = set()
+            
+            cur_recommendations = recommender.recommend(steamid, math.ceil(self._last_n * self.EXPAND_FURTHER))
+            # normalize the scores, only using max because there's going to be ratings below this current min
+            # when using the .score() method below
+            max_score = cur_recommendations["score"].max()
+            max_scores[recommender] = max_score
+            cur_recommendations["score"] = cur_recommendations["score"] / max_score
+            for appid, row in cur_recommendations.iterrows():
+                if not appid in recommendations:
+                    recommendations[appid] = 0
+                score = row["score"] * weight
+                recommendations[appid] += score
+                cur_checked_appids.add(appid)
+            checked_appids[recommender] = cur_checked_appids
 
         
         # Now we score the games some recommenders didn't recommend, plus score them with the AttributeScoringSystem
         for appid in recommendations.keys():
             for recommender, weight in self.recommenders:
                 if recommender not in checked_appids or not appid in checked_appids[recommender]:
-                    if isinstance(recommender, AbstractRecommenderSystem):
-                        recommendations[appid] += (recommender.score(steamid, appid) / max_scores[recommender]) * weight
-                    elif isinstance(recommender, AttributeScoringSystem):
-                        recommendations[appid] += recommender.score(steamid, appid) * weight
+                    recommendations[appid] += (recommender.score(steamid, appid) / max_scores[recommender]) * weight
         
         return recommendations # / sum([weight for _, weight in self.recommenders])
     

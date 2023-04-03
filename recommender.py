@@ -222,7 +222,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         self.dirty = True
 
 class GameTags(AbstractRecommenderData):
-    MAX_LENGTH = 19
+    MAX_LENGTH = 20
 
     def __init__(self, csv_filename: str = "game_tags.csv", weight_threshold=0.75, threshold=0.8, num_perm=128, num_part=32) -> None:
         """

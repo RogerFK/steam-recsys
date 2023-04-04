@@ -767,7 +767,7 @@ class GamePublishers(AbstractRecommenderData):
 
 
 class GameDetails(AbstractRecommenderData):
-    class GameWithOnlyDetails:
+    class GameBase:
         def __init__(self, game_details_row, rating_multiplier: float = config.RATING_MULTIPLIER):
             self.appid = game_details_row["appid"]
             self.name = game_details_row["name"]
@@ -807,7 +807,7 @@ class GameDetails(AbstractRecommenderData):
     
     def get_game_row(self, appid: int): return self.data.loc[appid]
 
-    def get_game(self, appid: int) -> GameWithOnlyDetails:
+    def get_game(self, appid: int) -> GameBase:
         """
         Description:
         ---
@@ -821,7 +821,7 @@ class GameDetails(AbstractRecommenderData):
         ---
         * Game: The Game object for the game
         """
-        return self.GameWithOnlyDetails(self.data.loc[appid], self.rating_multiplier)
+        return self.GameBase(self.data.loc[appid], self.rating_multiplier)
     
     def rating(self, appid: int) -> float:
         """
@@ -842,7 +842,7 @@ class GameDetails(AbstractRecommenderData):
         tot = vals["total_reviews"]
         return (pos / tot) * self.rating_multiplier if tot != 0 else 0.0
     
-    def get_games(self, appids: List[int]) -> List[GameWithOnlyDetails]:
+    def get_games(self, appids: List[int]) -> List[GameBase]:
         """
         Description:
         ---
@@ -856,9 +856,9 @@ class GameDetails(AbstractRecommenderData):
         ---
         * List[Game]: The list of Game objects for the games
         """
-        return [self.GameWithOnlyDetails(self.data.loc[appid], self.rating_multiplier) for appid in appids]
+        return [self.GameBase(self.data.loc[appid], self.rating_multiplier) for appid in appids]
     
-    def get_all_games(self) -> List[GameWithOnlyDetails]:
+    def get_all_games(self) -> List[GameBase]:
         """
         Description:
         ---
@@ -868,9 +868,9 @@ class GameDetails(AbstractRecommenderData):
         ---
         * List[Game]: The list of Game objects for all games
         """
-        return [self.GameWithOnlyDetails(row, self.rating_multiplier) for _, row in self.data.iterrows()]
+        return [self.GameBase(row, self.rating_multiplier) for _, row in self.data.iterrows()]
 
-class Game(GameDetails.GameWithOnlyDetails):
+class Game(GameDetails.GameBase):
     def __init__(self, game_details_row, game_categories: Set[int], game_developers: Set[int], game_publishers: Set[int], game_genres: Set[int], game_tags: Dict[int, float], rating_multiplier: float = config.RATING_MULTIPLIER):
         super().__init__(game_details_row)
         self.released = not self.coming_soon
@@ -1025,7 +1025,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         Description:
         ---
-        Gets the games similar to the given user, only taking into account the tags.
+        Gets the games similar to the given user, only taking into account the specific items (tags, genres, categories, etc.).
 
         Args:
         ---
@@ -1036,7 +1036,6 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         Tuple[List[int], Dict[int, float]]: A tuple containing a list of the appids of the games and a dictionary containing the weights of the tags
         """
         user_minhash = MinHash(self.recommender_data.minhash_num_perm, hashfunc=trivial_hash)
-        steamid = user_games.iloc[0]["steamid"]
         user_weights = self.get_item_weights(user_games)
         
         user_minhash.update_batch(user_weights.keys())
@@ -1794,7 +1793,7 @@ class GamePublishersSimilarity(AbstractGameSimilarity):
         if len(publishers) == 0:
             return []
         similarities = []
-        for other, other_publishers in self.game_publishers.get_games_from_publishers_of_game(appid):  # TODO
+        for other, other_publishers in self.game_publishers.get_games_from_publishers_of_game(appid): 
             similarity = len(publishers.intersection(other_publishers)) / len(publishers.union(other_publishers))
             similarities.append((other, similarity))
         similarities.sort(key=lambda x: x[1], reverse=True)
@@ -1837,6 +1836,8 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
             weight_release_date: float = 1.0,  # "I only like fresh games" / "old games were better"
             weight_coming_soon: float = 1.0
         ) -> None:
+        if not isinstance(game_details_or_game_info, (GameDetails, GameInfo)):
+            raise ValueError("game_details_or_game_info must be of type GameDetails or GameInfo")
         self.game_details = game_details_or_game_info if isinstance(game_details_or_game_info, GameDetails) else game_details_or_game_info.game_details
         self.weights = {
             "name": weight_name,
@@ -1853,7 +1854,8 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
             "coming_soon": weight_coming_soon
         }
         self.rating_multiplier = self.game_details.rating_multiplier
-        super().__init__(self.game_info)
+        self.perfect_games = {}
+        super().__init__(self.game_details)
     
     def set_weights(self,
                     weight_name: float = -1.0,
@@ -1899,7 +1901,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
             "coming_soon": weights["coming_soon"] if "coming_soon" in weights else self.weights["coming_soon"]
         }
 
-    def similarity(self, appid: int, other: int) -> float:
+    def similarity(self, app1_or_steamid: Union[int, GameDetails.GameBase], other: Union[int, GameDetails.GameBase]) -> float:
         """
         Description:
         ---
@@ -1907,16 +1909,28 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
 
         Args:
         ---
-        appid (int): The appid of the game
-        other (int): The appid of the game to compare to
+        app1_or_steamid (int or GameDetails.GameBase): The appid of the game to compare, a steamid, or a GameDetails.GameBase object
+        other (int or GameDetails.GameBase): The appid of the other game to compare, a steamid, or a GameDetails.GameBase object
 
         Returns:
         ---
         float: The similarity between the two games, from 0 to 1
         """
-    
-        details = self.game_details.get_game(appid)
-        other_details = self.game_details.get_game(other)
+        if isinstance(app1_or_steamid, int):
+            if app1_or_steamid < 76500000000000000:
+                details = self.game_details.get_game(app1_or_steamid)
+            else:
+                details = self.generate_perfect_game_details(app1_or_steamid)
+        else:
+            details = app1_or_steamid
+        
+        if isinstance(other, int):
+            if other < 76500000000000000:
+                other_details = self.game_details.get_game(other)
+            else:
+                other_details = self.generate_perfect_game_details(other)
+        else:
+            other_details = other
         similarity = 0.0
         similarity += difflib.SequenceMatcher(None, details.name, other_details.name).ratio() * self.weights["name"] if self.weights["name"] > 0 else 0.0
         similarity += (1.0 - (abs(details.required_age - other_details.required_age) / 18.0)) * self.weights["required_age"] if self.weights["required_age"] > 0 else 0.0
@@ -1938,6 +1952,80 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         similarity += self.weights["coming_soon"] if details.coming_soon == other_details.coming_soon else 0.0
 
         return similarity / sum(self.weights.values())
+    
+    def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
+        raise NotImplementedError("This method is not implemented for this class")
+
+    def get_similar_games(self, appid: int, n: int) -> List[Tuple[int, float]]:
+        raise NotImplementedError("This method is not implemented for this class")
+    
+    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+        """
+        Description:
+        ---
+        Computes the "perfect game" for a user, based on the games he owns. Then computes the similarity between this game and all the other games.
+
+        Args:
+        ---
+        user_games (DataFrame): A DataFrame containing the games owned by the user
+
+        Returns:
+        ---
+        Tuple[List[int], Dict[int, float]]: A tuple containing the appids of the games owned by the user and a dictionary containing the similarity between the perfect game and all the other games
+        """
+        steamid = user_games["steamid"].iloc[0]
+        perfect_game = self.generate_perfect_game_details(steamid, user_games)
+
+        # Compute the similarity between the perfect game and all the other games
+        similarities = {}
+        for game in self.game_details.get_all_games():  # TODO this is probably extremely slow
+            similarities[game.appid] = self.similarity(perfect_game, game)
+
+        return sorted(similarities.items(), key=lambda x: x[1], reverse=True), self.get_perfect_game_details(steamid)
+    
+    def generate_perfect_game_details(self, steamid: int, user_games: DataFrame) -> GameDetails:
+        """
+        Description:
+        ---
+        Computes the "perfect game" for a user, based on the games he owns.
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        user_games (DataFrame): A DataFrame containing the games owned by the user
+
+        Returns:
+        ---
+        GameDetails: The "perfect game" for the user
+        """
+        if steamid in self.perfect_games:
+            return self.perfect_games[steamid]
+        user_games = user_games[user_games["playtime_forever"] > 0]
+        user_games = user_games.sort_values("playtime_forever", ascending=False)
+        user_games = user_games.head(user_games.count() // 3)
+        user_games = user_games.sort_values("appid")
+        user_games = user_games.reset_index(drop=True)
+
+        # Compute the perfect game details with the average details except for the name and the release date
+        perfect_game = GameDetails.GameBase()
+        perfect_game.appid = user_games["appid"].iloc[0]
+        perfect_game.name = user_games["name"].iloc[0]
+        perfect_game.release_date = user_games["release_date"].iloc[0]
+        user_games = user_games.drop(columns=["appid", "name", "release_date"])
+        user_games = user_games.mean()
+        perfect_game.required_age = user_games["required_age"]
+        perfect_game.is_free = user_games["is_free"]
+        perfect_game.controller_support = user_games["controller_support"]
+        perfect_game.has_demo = user_games["has_demo"]
+        perfect_game.price_usd = user_games["price_usd"]
+        perfect_game.mac_os = user_games["mac_os"]
+        perfect_game.rating = user_games["rating"]
+        perfect_game.total_reviews = user_games["total_reviews"]
+        perfect_game.has_achievements = user_games["has_achievements"]
+        perfect_game.coming_soon = user_games["coming_soon"]
+        
+        self.perfect_games[steamid] = perfect_game
+        return perfect_game
 
 class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity): # TODO unused, maybe remove
     def __init__(self, game_similarities: List[Tuple[AbstractGameSimilarity, float]]) -> None:
@@ -2004,9 +2092,11 @@ class AbstractRecommenderSystem(ABC):
         if steamid in self.score_results:
             games = self.score_results[steamid]
         else:
+            logging.info(f"{self.__repr__()}: Generating recommendations for {steamid}.")
             # TODO: maybe delete some old results to save memory
             #       bet there is a hook for the GC to make this easier
             games = self.generate_recommendations(steamid)
+            logging.info(f"{self.__repr__()}: Finished generating recommendations for {steamid}.")
             # sort games
             games = OrderedDict(sorted(games.items(), key=lambda item: item[1], reverse=True))
             self.score_results[steamid] = games
@@ -2183,7 +2273,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
 
-class RatingBasedRecommenderSystem(AbstractRecommenderSystem): # TODO: Remove, AttributeScoringSystem is the same but better
+class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, game_details: GameDetails, pgdata: PlayerGamesPlaytime = None):
         """Description
         ---
@@ -2310,9 +2400,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
                 similar_games = self.game_similarity.get_similar_games(appid)
                 if similar_games is None:
                     continue
-                for idx, row in similar_games.iterrows():
-                    other_appid, similarity = row
-                    other_appid = int(other_appid)
+                for other_appid, similarity in similar_games:
                     if filter_owned and self.pgdata.rating(steamid, other_appid) > 0:
                         continue
                     if not other_appid in games:

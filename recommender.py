@@ -78,6 +78,26 @@ class AbstractRecommenderData(ABC):
         """
         results = self.lshensemble.query(user_minhash, length)
         return results
+    
+    def set_new_lshensemble_threshold(self, threshold):
+        """
+        Description:
+        ---
+        DEBUG ONLY! Works in a few classes only. Sets a new threshold for the MinHashLSHEnsemble index and recomputes it.
+
+        Args:
+        ---
+        * threshold (float): The new threshold for the MinHashLSHEnsemble index
+
+        Returns:
+        ---
+        None
+        """
+        self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=self.lshensemble.h, num_part=32) # TODO: make num_part an instance variable
+        lsh_ensemble_index = []
+        for steamid, (min_hash, length) in self.minhashes.items():
+            lsh_ensemble_index.append((steamid, min_hash, length))
+        self.lshensemble.index(lsh_ensemble_index)
 
 class PlayerGamesPlaytime(AbstractRecommenderData):
     pickle_name_fmt = "PGPTData/{}_thres{}_per{}par{}"
@@ -123,7 +143,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         }
         self.dump_data()
         atexit.register(self.dump_data)
-
+    
     def dump_data(self):
         if self.dirty:
             logging.info(f"Dumping data to bin_data/{self.pickle_name}.pickle")
@@ -2097,7 +2117,7 @@ class AbstractRecommenderSystem(ABC):
         self.score_results = {}  # steamid -> {appid: score}
         self.pgdata = pgdata
 
-    def recommend(self, steamid: int, n: int = 10, filter_owned = True) -> DataFrame:
+    def recommend(self, steamid: int, n: int = 10, filter_owned = False) -> DataFrame:
         """Recommends games to a user
 
         Args:
@@ -2130,7 +2150,7 @@ class AbstractRecommenderSystem(ABC):
         if n == -1:
             results = games if not filter_owned else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)}
         else:
-            results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else list(games.items())[:n]
+            results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else {k: v for k, v in list(games.items())[:n]}
         
         df = DataFrame.from_dict(results, orient="index", columns=["score"])
         df.index.name = "appid"
@@ -2284,7 +2304,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
                 appid = int(appid)
                 if not appid in games:
                     games[appid] = 0
-                games[appid] += pseudorating * similarity
+                games[appid] += pseudorating * (similarity ** 2)
         return games
 
     
@@ -2297,6 +2317,9 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
             raise ValueError("data must have a 'appid' column")
         if not "playtime_forever" in data.columns:
             raise ValueError("data must have a 'playtime_forever' column")
+    
+    def __repr__(self) -> str:
+        return f"PlaytimeBasedRecommenderSystem(similarity={self.similarity})"
 
 class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, game_details: GameDetails, pgdata: PlayerGamesPlaytime = None):

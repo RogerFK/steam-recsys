@@ -15,6 +15,9 @@ import atexit
 import config
 import difflib
 from datetime import datetime, timedelta
+from joblib import Parallel, delayed
+import concurrent.futures as cf
+from utils import ChainedAssignment
 
 def trivial_hash(x):
     return x
@@ -261,12 +264,14 @@ class GameTags(AbstractRecommenderData):
             self.data = self.processed_data["data"]
             self.minhashes = self.processed_data["minhashes"]
             self.relevant_by_tag = self.processed_data["relevant_by_tag"]
+            self.idf = self.processed_data["idf"]
             return
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
         self.minhashes = {}
         self.relevant_by_tag = {}  # tagid -> appids above weight threshold
+        self.idf = {}  # tagid -> inverse document frequency
         logging.info("Computing MinHashes for each game...")
         for appid, row in self.data.groupby("appid"):
             # we only want to store the appids, we'll get the weights later
@@ -280,6 +285,14 @@ class GameTags(AbstractRecommenderData):
                 if tagid not in self.relevant_by_tag:
                     self.relevant_by_tag[tagid] = set()
                 self.relevant_by_tag[tagid].add(appid)
+            for tagid in game_tags:
+                if tagid not in self.idf:
+                    self.idf[tagid] = 0
+                self.idf[tagid] += 1
+        
+        total_games = self.data["appid"].nunique()
+        for tagid in self.idf:
+            self.idf[tagid] = math.log(total_games / self.idf[tagid])
         logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
@@ -287,7 +300,8 @@ class GameTags(AbstractRecommenderData):
             "lshensemble": self.lshensemble,
             "data": self.data,
             "minhashes": self.minhashes,
-            "relevant_by_tag": self.relevant_by_tag
+            "relevant_by_tag": self.relevant_by_tag,
+            "idf": self.idf
         }
         with open(f"bin_data/game_tags.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
@@ -324,7 +338,7 @@ class GameTags(AbstractRecommenderData):
         vals = self.data.loc[(self.data["appid"] == appid) & (self.data["tagid"] == tagid), "weight"].values
         if len(vals) == 0:
             return 0
-        return vals[0]
+        return vals[0] * self.idf[tagid]
     
     def get_lsh_similar_games(self, appid: int) -> Generator[int, None, None]:
         """Gets all similar games beyond the threshold set in the constructor.
@@ -372,8 +386,13 @@ class GameTags(AbstractRecommenderData):
         """
         game_tags = self.data.loc[self.data["appid"] == appid]
         game_tags.reset_index(drop=True, inplace=True)
+        # apply the inverse document frequency
+        with ChainedAssignment():
+            game_tags["weight"] = game_tags.apply(lambda x: x["weight"] * self.idf[x["tagid"]], axis=1)
+        # game_tags = game_tags[["tagid", "weight"]]
         return game_tags.set_index("tagid")["weight"].to_dict()
     
+    # TODO unused, maybe remove
     def get_weighted_tags_for_list(self, appids: List[int]) -> Dict[int, Dict[int, float]]:
         """Gets the tags for a list of games.
 
@@ -701,7 +720,8 @@ class GameDevelopers(AbstractRecommenderData):
         return games
     
 class GamePublishers(AbstractRecommenderData):
-    def __init__(self, csv_filename: str, pickle_filename: str = None):
+    def __init__(self, csv_filename: str):
+        pickle_filename = "game_publishers"
         super().__init__(csv_filename, pickle_filename)
         if self.processed_data is not None:
             self.data = self.processed_data
@@ -1117,9 +1137,11 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         return weight * pseudorating
 
 class RawUserSimilarity(AbstractSimilarity):
-    def __init__(self, pgdata: PlayerGamesPlaytime) -> None:
+    def __init__(self, pgdata: PlayerGamesPlaytime, parallel=True) -> None:
         super(RawUserSimilarity).__init__()
         self.pgdata = pgdata
+        self.parallelize = parallel
+        self._own_games_played = None
 
     def similarity(self, steamid: int, other: int) -> float:
         """
@@ -1137,10 +1159,15 @@ class RawUserSimilarity(AbstractSimilarity):
         float: The similarity between the two users
         """
         # check if pgdata is set
-        if self.pgdata is None:
-            raise ValueError("pgdata must be set to use this similarity function")
-
+        # if self.pgdata is None:
+        #     raise ValueError("pgdata must be set to use this similarity function")
+        if self._own_games_played is None:
+            own_games_played = self.pgdata.get_user_games(steamid)
+            self._own_games_played = own_games_played
+        else:
+            own_games_played = self._own_games_played
         own_games_played = self.pgdata.get_user_games(steamid)
+        
         other_games_played = self.pgdata.get_user_games(other)
         
         # we only want to compare the games that both users have played
@@ -1174,7 +1201,6 @@ class RawUserSimilarity(AbstractSimilarity):
         # reorder the columns
         sim_users = sim_users[["steamid", "similarity"]]
         return sim_users
-
     def get_similar_users(self, steamid: int, n: int = 10) -> DataFrame:
         """Gets n top similar users to a user. Specially useful for collaborative filtering.
 
@@ -1191,20 +1217,44 @@ class RawUserSimilarity(AbstractSimilarity):
         
         logging.info(f"Finding {n} similar users to {steamid}. Please wait...")
         priority_queue = PriorityQueue(n + 1)
-        for similar_user in rough_similar_users:
-            if similar_user == steamid:
-                continue
-            similarity = self.similarity(steamid, similar_user)
-            priority_queue.put((similarity, similar_user))
-            if priority_queue.qsize() > n:
-                _ = priority_queue.get()
+        if self.parallelize:
+            with cf.ThreadPoolExecutor() as executor:
+                futures = []
+                for similar_user in rough_similar_users:
+                    if similar_user == steamid:
+                        continue
+                    futures.append(executor.submit(self.similarity, steamid, similar_user))
+                for future in cf.as_completed(futures):
+                    similarity = future.result()
+                    priority_queue.put((similarity, similar_user))
+                    if priority_queue.qsize() > n:
+                        _ = priority_queue.get()
+            # use joblib instead
+            # rough_similar_users = list(rough_similar_users)
+            # print("Got " + str(len(rough_similar_users)) + " similar users. Parallelizing...")
+            # similarities = Parallel(n_jobs=-1)(delayed(self.similarity)(steamid, similar_user) for similar_user in rough_similar_users)
+            # for i, similar_user in enumerate(rough_similar_users):
+            #     if similar_user == steamid:
+            #         continue
+            #     priority_queue.put((similarities[i], similar_user))
+            #     if priority_queue.qsize() > n:
+            #         _ = priority_queue.get()
+        else:
+            for similar_user in rough_similar_users:
+                if similar_user == steamid:
+                    continue
+                similarity = self.similarity(steamid, similar_user)
+                priority_queue.put((similarity, similar_user))
+                if priority_queue.qsize() > n:
+                    _ = priority_queue.get()
         
         logging.info(f"Finished finding relevant similar users.")
+        self._own_games_played = None
         return self.player_similarities_from_priority_queue(priority_queue)
 
 class CosineUserSimilarity(RawUserSimilarity):
-    def __init__(self, pgdata: PlayerGamesPlaytime, precompute: bool = True) -> None:
-        super().__init__(pgdata)
+    def __init__(self, pgdata: PlayerGamesPlaytime, precompute: bool = True, parallel=True) -> None:
+        super().__init__(pgdata, parallel)
         self.precomputed = precompute
         self.dirty = True
         if precompute:
@@ -1264,7 +1314,11 @@ class CosineUserSimilarity(RawUserSimilarity):
         if self.pgdata is None:
             raise ValueError("pgdata must be set to use this similarity function")
 
-        own_games_played = self.pgdata.get_user_games(steamid)
+        if self._own_games_played is None:
+            own_games_played = self.pgdata.get_user_games(steamid)
+            self._own_games_played = own_games_played
+        else:
+            own_games_played = self._own_games_played
         other_games_played = self.pgdata.get_user_games(other)
         
         games_to_iterate = own_games_played.join(other_games_played)
@@ -1292,8 +1346,8 @@ class CosineUserSimilarity(RawUserSimilarity):
         return total_score / (math.sqrt(own_total_score) * math.sqrt(other_total_score))
 
 class PearsonUserSimilarity(RawUserSimilarity):
-    def __init__(self, pgdata: PlayerGamesPlaytime) -> None:
-        super().__init__(pgdata)
+    def __init__(self, pgdata: PlayerGamesPlaytime, parallel=True) -> None:
+        super().__init__(pgdata, parallel)
         # Check if there's pickled data in bin_data\pearsonusersimilarity.pickle
         self.dirty = False
         if os.path.exists("bin_data/pearsonusersimilarity.pickle"):
@@ -1352,7 +1406,11 @@ class PearsonUserSimilarity(RawUserSimilarity):
         if self.pgdata is None:
             raise ValueError("pgdata must be set to use this similarity function")
 
-        own_games_played = self.pgdata.get_user_games(steamid)
+        if self._own_games_played is None:
+            own_games_played = self.pgdata.get_user_games(steamid)
+            self._own_games_played = own_games_played
+        else:
+            own_games_played = self._own_games_played
         other_games_played = self.pgdata.get_user_games(other)
         
         games_to_iterate = own_games_played.join(other_games_played, on="appid", how="outer", lsuffix="_left", rsuffix="_right").drop(columns=["steamid_left", "steamid_right"])
@@ -2026,7 +2084,6 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
             raise ValueError("user_games cannot be None if the perfect game for the user has not been computed yet")
         user_games = user_games[user_games["playtime_forever"] > 0]
         user_games = user_games.sort_values("playtime_forever", ascending=False)
-        print(user_games)
         user_games = user_games.head(user_games.count()[0] // 3)
 
         # Join user_games with game_details
@@ -2038,7 +2095,6 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         perfect_game["name"] = f"Perfect Game for {steamid}"
         # NOTE: This prioritizes recent games, maybe we should do the mean of the release dates instead
         # perfect_game["release_date"] = datetime.now().strftime("%b %d, %Y")
-        print(user_games["release_date"])
         all_release_dates = [datetime.strptime(release_date, "%b %d, %Y") for release_date in user_games["release_date"] if release_date != "\\N"]
         # compute the average release date
         # NOTE We should compute the average taking into account the playtime of each game
@@ -2046,7 +2102,6 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         perfect_game["release_date"] = datetime.strftime(sum([release_date - reference_date for release_date in all_release_dates], timedelta()) / len(all_release_dates) + reference_date, "%b %d, %Y")
         
         user_games = user_games.drop(columns=["appid", "name", "release_date", "steamid", "playtime_forever", "date_retrieved"])
-        print(user_games.columns)
         user_games = user_games.mean(numeric_only=False)
         perfect_game["required_age"] = user_games["required_age"]
         perfect_game["is_free"] = user_games["is_free"]
@@ -2061,7 +2116,6 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         perfect_game["coming_soon"] = user_games["coming_soon"]
         
         perfect_game = GameDetails.GameBase(0, perfect_game)
-        print(perfect_game)
         self.perfect_games[steamid] = perfect_game
         return perfect_game
     
@@ -2506,8 +2560,9 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         float: The score of the game for the user
         """
         if not steamid in self.score_results:
-            self.game_similarity.get_item_weights(self.pgdata.get_user_games(steamid))
-        user_map = self.score_results[steamid]
+            user_map = self.game_similarity.get_item_weights(self.pgdata.get_user_games(steamid))
+        else:
+            user_map = self.score_results[steamid]
         score = 0
         perfect_match = True
         for itemid, weight in self.game_similarity.get_game_items(appid):
@@ -2515,7 +2570,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
                 score += weight * user_map[itemid]
             else:
                 perfect_match = False
-        return score + (perfect_match) * (score * self.perfect_match_weight) / sum(self.score_results[steamid].values())
+        return score + (perfect_match) * (score * self.perfect_match_weight) / sum(user_map.values())
 
     def generate_recommendations(self, steamid: int) -> Dict[int, float]:
         similar_games, item_weights = self.game_similarity.get_similar_games_from_user_games(self.pgdata.get_user_games(steamid))

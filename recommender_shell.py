@@ -3,6 +3,7 @@
 from recommender import *
 import pandas as pd
 from normalization import *
+import time
 
 # variables
 steamid = 76561197960269908
@@ -19,11 +20,13 @@ game_info = GameInfo(game_details, game_categories, game_developers, game_publis
 # recommender systems and similarity objects
 rand = RandomRecommenderSystem()
 pgdata = PlayerGamesPlaytime('data/player_games_subset.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
-pgdata_lowthres = PlayerGamesPlaytime('data/player_games_subset.csv', LogPlaytimeNormalizer('sum_max', inplace=True), threshold=0.5)
-user_sim = CosineUserSimilarity(pgdata)
-user_sim_lowthres = CosineUserSimilarity(pgdata_lowthres)
+pgdata_lowthres = PlayerGamesPlaytime('data/player_games_subset.csv', LogPlaytimeNormalizer('sum_max', inplace=True), threshold=0.2)
+user_sim = CosineUserSimilarity(pgdata, parallel=False)
+user_sim_lowthres = CosineUserSimilarity(pgdata_lowthres, parallel=True)
+user_sim_lowthres_st = CosineUserSimilarity(pgdata_lowthres, parallel=False)
 pbr = PlaytimeBasedRecommenderSystem(pgdata, user_sim)
 pbr_lowthres = PlaytimeBasedRecommenderSystem(pgdata_lowthres, user_sim_lowthres)
+pbr_lowthres_st = PlaytimeBasedRecommenderSystem(pgdata_lowthres, user_sim_lowthres_st)
 tag_sim = CosineGameTagSimilarity(game_tags)
 tbr = ContentBasedRecommenderSystem(pgdata, tag_sim, 1)
 gdet_sim = GameDetailsSimilarity(game_details)
@@ -39,7 +42,16 @@ gpub_rec = ContentBasedRecommenderSystem(pgdata, gpub_sim)
 gtag_rec = ContentBasedRecommenderSystem(pgdata, tag_sim)
 cbr = HybridRecommenderSystem(pgdata, (pbr, 3), (tbr, 3), (gdet_rec, 1), (gdev_rec, 1), (gpub_rec, 0.5), (ggen_rec, 0.2), (gcat_rec, 0.5))
 
+start_time = time.time()
 pbr_recommendations = pbr.recommend(steamid, n=10, n_users=40)
+print("pbr.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
+# start_time = time.time()
+# pbr_lowthres_recommendations = pbr_lowthres.recommend(steamid, n=10, n_users=40)
+# print("pbr_lowthres.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
+# start_time = time.time()
+# pbr_lowthres_st_recommendations = pbr_lowthres_st.recommend(steamid, n=10, n_users=40)
+# print("pbr_lowthres_st.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
+# start_time = time.time()
 tbr_recommendations = tbr.recommend(steamid, n=50)
 cbr_recommendations = cbr.recommend(steamid, n=50)
 

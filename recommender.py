@@ -23,7 +23,7 @@ def trivial_hash(x):
     return x
 
 class AbstractRecommenderData(ABC):
-    def __init__(self, csv_filename: str, pickle_filename: str = None):
+    def __init__(self, csv_filename: Union[str, DataFrame], pickle_filename: str = None):
         self.processed_data = None
         self.data: pd.DataFrame = pd.DataFrame()
         try:
@@ -36,8 +36,14 @@ class AbstractRecommenderData(ABC):
                 return
         except FileNotFoundError:
             try:
-                logging.info(f"Loading {self.__class__.__name__} data from {csv_filename}...")
-                self.data = pd.read_csv(csv_filename)
+                if csv_filename is None:
+                    raise FileNotFoundError
+                if isinstance(csv_filename, DataFrame):
+                    logging.info(f"Loading {self.__class__.__name__} data from DataFrame...")
+                    self.data = csv_filename
+                else:
+                    logging.info(f"Loading {self.__class__.__name__} data from {csv_filename}...")
+                    self.data = pd.read_csv(csv_filename)
             except FileNotFoundError:
                 logging.error("File not found, please check the path and try again")
                 raise
@@ -103,11 +109,11 @@ class AbstractRecommenderData(ABC):
         self.lshensemble.index(lsh_ensemble_index)
 
 class PlayerGamesPlaytime(AbstractRecommenderData):
-    pickle_name_fmt = "PGPTData/{}_thres{}_per{}par{}"
+    pickle_name_fmt = "PGPTData/{}_thres{}_perm{}part{}"
     def __init__(self, filename: str, playtime_normalizer: AbstractPlaytimeNormalizer, threshold=0.8, num_perm=128, num_part=32):
         if not os.path.exists("bin_data/PGPTData"):
             os.makedirs("bin_data/PGPTData")
-        self.pickle_name = self.pickle_name_fmt.format(str(playtime_normalizer), threshold, num_perm, num_part)
+        self.pickle_name = self.pickle_name_fmt.format(repr(playtime_normalizer), threshold, num_perm, num_part)
         super().__init__(filename, self.pickle_name)  # load the processed data if it exists
         self.playtime_normalizer = playtime_normalizer
         self.minhash_num_perm = num_perm
@@ -243,6 +249,9 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         self.data.reset_index(drop=True, inplace=True)
         self.processed_data = None
         self.dirty = True
+    
+    def __repr__(self) -> str:
+        return f"PlayerGamesPlaytimeData({self.pickle_name.removeprefix('PGPTData/')})"
 
 class GameTags(AbstractRecommenderData):
     MAX_LENGTH = 20
@@ -385,11 +394,14 @@ class GameTags(AbstractRecommenderData):
         Dict[int, float]: The tags the game has
         """
         game_tags = self.data.loc[self.data["appid"] == appid]
+        # check first if the game has any tags
+        if len(game_tags) == 0:
+            return {}
         game_tags.reset_index(drop=True, inplace=True)
         # apply the inverse document frequency
         with ChainedAssignment():
-            game_tags["weight"] = game_tags.apply(lambda x: x["weight"] * self.idf[x["tagid"]], axis=1)
-        # game_tags = game_tags[["tagid", "weight"]]
+            weights = game_tags.apply(lambda x: x["weight"] * self.idf[x["tagid"]], axis=1)
+            game_tags["weight"] = weights
         return game_tags.set_index("tagid")["weight"].to_dict()
     
     # TODO unused, maybe remove
@@ -1135,6 +1147,9 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
     
     def weight_function(self, weight, pseudorating) -> float:
         return weight * pseudorating
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__} (recommender_data={self.recommender_data})"
 
 class RawUserSimilarity(AbstractSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime, parallel=True) -> None:
@@ -1166,7 +1181,7 @@ class RawUserSimilarity(AbstractSimilarity):
             self._own_games_played = own_games_played
         else:
             own_games_played = self._own_games_played
-        own_games_played = self.pgdata.get_user_games(steamid)
+        # own_games_played = self.pgdata.get_user_games(steamid)
         
         other_games_played = self.pgdata.get_user_games(other)
         
@@ -1251,6 +1266,10 @@ class RawUserSimilarity(AbstractSimilarity):
         logging.info(f"Finished finding relevant similar users.")
         self._own_games_played = None
         return self.player_similarities_from_priority_queue(priority_queue)
+    
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(pgdata={self.pgdata})"
 
 class CosineUserSimilarity(RawUserSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime, precompute: bool = True, parallel=True) -> None:
@@ -1419,8 +1438,8 @@ class PearsonUserSimilarity(RawUserSimilarity):
         user_mean, user_denominator = self.get_user_mean_denominator(steamid)
         other_mean, other_denominator = self.get_user_mean_denominator(other)
         
-        for idx, row in games_to_iterate.iterrows():
-            _, appid_left, own_pseudorating, appid_right, other_pseudorating = row
+        for _, row in games_to_iterate.iterrows():
+            _, _, own_pseudorating, _, other_pseudorating = row
             if np.isnan(own_pseudorating):
                 own_pseudorating = 0
             if np.isnan(other_pseudorating):
@@ -2201,14 +2220,18 @@ class AbstractRecommenderSystem(ABC):
             self.score_results[steamid] = games
         
         # get the top n games
-        if n == -1:
-            results = games if not filter_owned else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)}
-        else:
-            results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else {k: v for k, v in list(games.items())[:n]}
+        #if n == -1:
+        results = games if not filter_owned \
+            else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)}
+        #else:
+        #    results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else {k: v for k, v in list(games.items())[:n]}
         
         df = DataFrame.from_dict(results, orient="index", columns=["score"])
         df.index.name = "appid"
         df = df.sort_values(by="score", ascending=False)
+        if n != -1:
+            df = df.head(n)
+        # 
         return df
 
     

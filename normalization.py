@@ -5,7 +5,7 @@ import math
 import re
 import config
 class AbstractPlaytimeNormalizer(ABC):
-    def __init__(self, denominator_function: str, playtime_approach: str = "minutes_always_more_than_60", output_multiplier: float = config.RATING_MULTIPLIER, inplace: bool = False):
+    def __init__(self, denominator_function: str = "sum_max", playtime_approach: str = "minutes_always_more_than_60", output_multiplier: float = config.RATING_MULTIPLIER, inplace: bool = False):
         self.inplace = inplace
         self.denominator_function = denominator_function
         self.playtime_approach = playtime_approach
@@ -81,6 +81,14 @@ class AbstractPlaytimeNormalizer(ABC):
     
     def __str__(self) -> str:
         return self.__repr__()
+
+class NoNormalization(AbstractPlaytimeNormalizer):
+    """Doesn't normalize the player_games data
+    """
+    def normalize(self, data: DataFrame) -> DataFrame:
+        self.validate_data(data)
+        return data
+    
 
 class LinearPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     """Normalizes the player_games data using the playtime_forever

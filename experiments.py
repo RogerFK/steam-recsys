@@ -97,7 +97,9 @@ def main():
     game_genres_csv = pd.read_csv('data/game_genres.csv')
     game_genres_futures = [executor.submit(recommender.GameGenres, game_genres_csv, threshold) for threshold in game_similarity_thresholds ]
     game_tags_csv = pd.read_csv('data/game_tags.csv')
-    game_tags_futures = [executor.submit(recommender.GameTags, game_tags_csv, threshold) for threshold in game_similarity_thresholds ]
+    idf_weights = [0.1] # np.linspace(0, 0.3, 4)
+    weight_thresholds = [0.75] # np.linspace(0.5, 1, 5)
+    game_tags_futures = [executor.submit(recommender.GameTags, game_tags_csv, weight_threshold, threshold, idf_weight) for threshold in game_similarity_thresholds for weight_threshold in weight_thresholds for idf_weight in idf_weights ]
     game_categories = []
     game_developers = []
     game_publishers = []

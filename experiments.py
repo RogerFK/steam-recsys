@@ -53,7 +53,7 @@ def main():
     # now check if the data is already there
     if not os.path.exists("data/player_games_train.csv") or not os.path.exists("data/player_games_test.csv"):
         print("Data is not split, splitting now...")
-        split_train_test.main()
+        split_train_test.main("data/player_games_subset.csv")
     # now load the data
     print("Loading data...")
     train_data = pd.read_csv("data/player_games_train.csv")
@@ -64,8 +64,8 @@ def main():
     normalization_classes.append(normalization.RootPlaytimeNormalizer)  # we add another one as
     # now get all the similarities, separated by game_similarities and user_similarities
     # similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractSimilarity)]
-    game_similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity]
-    user_similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
+    game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity]
+    user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
     print("Normalization classes and similarity classes loaded.\nInstantiating player game data with different playtime normalizers. This might take very long...")
     # now we want to mix recommender.PlayerGamesPlaytime with every normalization class with thresholds from 0.1 to 0.9
     # first we need to get all the combinations of normalization classes and thresholds
@@ -73,7 +73,7 @@ def main():
     player_games_playtimes = []
 
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in parallel...")
-    futures = [executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in np.linspace(0.1, 0.9, 9)]
+    futures = [executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in [0.9] ] # np.linspace(0.1, 0.9, 9)]
     for future in cf.as_completed(futures):
         player_games_playtimes.append(future.result())
     
@@ -84,53 +84,127 @@ def main():
     # but first we need to get different game_similarities and user_similarities
     # and to get different game and user similarities, we'd first need every AbstractRecommenderData except for PlayerGamesPlaytime and AbstractRecommenderData
     # also doing this programatically is harder than doing it by hand, I just took this from recommender_shell.py
-    game_details = recommender.GameDetails('data/game_details.csv')  # this one is global
-    game_categories_futures = [executor.submit(recommender.GameCategories, 'data/game_categories.csv', threshold) for threshold in np.linspace(0.1, 0.9, 5)]
-    game_developers_futures = [executor.submit(recommender.GameDevelopers, 'data/game_developers.csv', threshold) for threshold in np.linspace(0.1, 0.9, 5)]
-    game_publishers_futures = [executor.submit(recommender.GamePublishers, 'data/game_publishers.csv', threshold) for threshold in np.linspace(0.1, 0.9, 5)]
-    game_genres_futures = [executor.submit(recommender.GameGenres, 'data/game_genres.csv', threshold) for threshold in np.linspace(0.1, 0.9, 5)]
-    game_tags_futures = [executor.submit(recommender.GameTags, 'data/game_tags.csv', threshold) for threshold in np.linspace(0.1, 0.9, 5)]
-    game_categories = [future.result() for future in game_categories_futures]
-    game_developers = [future.result() for future in game_developers_futures]
-    game_publishers = [future.result() for future in game_publishers_futures]
-    game_genres = [future.result() for future in game_genres_futures]
-    game_tags = [future.result() for future in game_tags_futures]
-    # TODO TODO TODO TODO terminar todo esto
-
-        # # #
-      # # # # #
-    # # # # # # #
-        # # # # #
-            # # #
-                #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
-    # # # # # # # #
     
-
     print("Instantiating Recommender Data with different thresholds in parallel...")
+    game_similarity_thresholds = [0.9] # np.linspace(0.1, 0.9, 9)
+    game_details = recommender.GameDetails('data/game_details.csv')  # this one is global
+    game_categories_csv = pd.read_csv('data/game_categories.csv')
+    game_categories_futures = [executor.submit(recommender.GameCategories, game_categories_csv, threshold) for threshold in game_similarity_thresholds ]
+    game_developers_csv = pd.read_csv('data/game_developers.csv')
+    game_developers_futures = [executor.submit(recommender.GameDevelopers, game_developers_csv, threshold) for threshold in game_similarity_thresholds ]
+    game_publishers_csv = pd.read_csv('data/game_publishers.csv')
+    game_publishers_futures = [executor.submit(recommender.GamePublishers, game_publishers_csv, threshold) for threshold in game_similarity_thresholds ]
+    game_genres_csv = pd.read_csv('data/game_genres.csv')
+    game_genres_futures = [executor.submit(recommender.GameGenres, game_genres_csv, threshold) for threshold in game_similarity_thresholds ]
+    game_tags_csv = pd.read_csv('data/game_tags.csv')
+    game_tags_futures = [executor.submit(recommender.GameTags, game_tags_csv, threshold) for threshold in game_similarity_thresholds ]
+    game_categories = []
+    game_developers = []
+    game_publishers = []
+    game_genres = []
+    game_tags = []
+    for future in cf.as_completed(game_categories_futures + game_developers_futures + game_publishers_futures + game_genres_futures + game_tags_futures):
+        if future in game_categories_futures:
+            game_categories.append(future.result())
+        elif future in game_developers_futures:
+            game_developers.append(future.result())
+        elif future in game_publishers_futures:
+            game_publishers.append(future.result())
+        elif future in game_genres_futures:
+            game_genres.append(future.result())
+        elif future in game_tags_futures:
+            game_tags.append(future.result())
+        else:
+            raise ValueError(f"Future {repr(future)} not in any list" +
+                             f"game_categories_futures: {game_categories_futures}\n" + f"game_categories: {game_categories}\n\n"
+                             f"game_developers_futures: {game_developers_futures}\n" + f"game_developers: {game_developers}\n\n"
+                             f"game_publishers_futures: {game_publishers_futures}\n" + f"game_publishers: {game_publishers}\n\n"
+                             f"game_genres_futures: {game_genres_futures}\n" + f"game_genres: {game_genres}\n\n"
+                             f"game_tags_futures: {game_tags_futures}\n" + f"game_tags: {game_tags}\n\n"
+                             )
+    # game_categories = [future.result() for future in game_categories_futures]
+    # game_developers = [future.result() for future in game_developers_futures]
+    # game_publishers = [future.result() for future in game_publishers_futures]
+    # game_genres = [future.result() for future in game_genres_futures]
+    # game_tags = [future.result() for future in game_tags_futures]
+    game_info = {}
+    for thres in range(len(game_similarity_thresholds)):
+        thres = game_similarity_thresholds[thres]
+        # find the index of each recommender data in each list of recommender datas where their threshold is equal to thres
+        # then use that index to get the recommender data from each list
+        game_category = None
+        for gc in game_categories:
+            if gc.lshensemble.threshold == thres:
+                game_category = gc
+                break
+        game_developer = None
+        for gd in game_developers:
+            if gd.lshensemble.threshold == thres:
+                game_developer = gd
+                break
+        game_publisher = None
+        for gp in game_publishers:
+            if gp.lshensemble.threshold == thres:
+                game_publisher = gp
+                break
+        game_genre = None
+        for gg in game_genres:
+            if gg.lshensemble.threshold == thres:
+                game_genre = gg
+                break
+        game_tag = None
+        for gt in game_tags:
+            if gt.lshensemble.threshold == thres:
+                game_tag = gt
+                break
+        
+        game_info[thres] = recommender.GameInfo(game_details, game_category, game_developer, game_publisher, game_genre, game_tag)
 
-    recommender_combinations = []
-    print("Instantiating ContentBasedRecommenderSystem with different thresholds and normalizers in parallel...")
-    futures = [executor.submit(recommender.ContentBasedRecommenderSystem, player_games_playtime, game_similarity) for player_games_playtime in player_games_playtimes for game_similarity in game_similarities]
-    for future in cf.as_completed(futures):
-        recommender_combinations.append(future.result())
-    print("Instantiating PlaytimeBasedRecommenderSystem with different thresholds and normalizers in parallel...")
-    futures = [executor.submit(recommender.PlaytimeBasedRecommenderSystem, player_games_playtime, user_similarity) for player_games_playtime in player_games_playtimes for user_similarity in user_similarities]
-    for future in cf.as_completed(futures):
-        recommender_combinations.append(future.result())
-    # also add RandomRecommenderSystem and RatingBasedRecommenderSystem
-    recommender_combinations.append(recommender.RandomRecommenderSystem())
-    recommender_combinations.append(recommender.RatingBasedRecommenderSystem(recommender.GameDetails("data/game_details.csv"), train_data))
+    # NOTE: this one and the next ones are fast in single-threaded mode
+    paralellize_everything = False
+    if paralellize_everything:
+        print("Instantiating GameSimilarities with their respective recommender data in parallel...")
+
+        game_similarity_futures = [executor.submit(game_similarity_type, game_info[thres]) for game_similarity_type in game_similarity_types for thres in range(len(game_similarity_thresholds))]
+        game_similarities = [recommender.GameDetailsSimilarity(game_details)]
+        for future in cf.as_completed(game_similarity_futures):
+            game_similarities.append(future.result())
+            
+        print("Instantiating UserSimilarities with their respective recommender data in parallel...")
+        user_similarity_futures = [executor.submit(user_similarity_type, pgdata) for user_similarity_type in user_similarity_types for pgdata in player_games_playtimes]
+        user_similarities = []
+        for future in cf.as_completed(user_similarity_futures):
+            user_similarities.append(future.result())
+    else:
+        print("Instantiating GameSimilarities and UserSimilarities with their respective recommender data in serial...")
+        game_similarities = [recommender.GameDetailsSimilarity(game_details)]
+        for game_similarity_type in game_similarity_types:
+            for thres in range(len(game_similarity_thresholds)):
+                game_similarities.append(game_similarity_type(game_info[thres]))
+        user_similarities = []
+        for user_similarity_type in user_similarity_types:
+            for pgdata in player_games_playtimes:
+                user_similarities.append(user_similarity_type(pgdata))
+
+    recommender_combinations = [recommender.RandomRecommenderSystem(), recommender.RatingBasedRecommenderSystem(game_details, train_data)]
+    if paralellize_everything:
+        print("Instantiating ContentBasedRecommenderSystem with different thresholds and normalizers in parallel...")
+        futures = [executor.submit(recommender.ContentBasedRecommenderSystem, player_games_playtime, game_similarity) for player_games_playtime in player_games_playtimes for game_similarity in game_similarities]
+        for future in cf.as_completed(futures):
+            recommender_combinations.append(future.result())
+        print("Instantiating PlaytimeBasedRecommenderSystem with different thresholds and normalizers in parallel...")
+        futures = [executor.submit(recommender.PlaytimeBasedRecommenderSystem, player_games_playtime, user_similarity) for player_games_playtime in player_games_playtimes for user_similarity in user_similarities]
+        for future in cf.as_completed(futures):
+            recommender_combinations.append(future.result())
+    else:
+        print("Instantiating ContentBasedRecommenderSystem with different thresholds and normalizers in serial...")
+        for player_games_playtime in player_games_playtimes:
+            for game_similarity in game_similarities:
+                recommender_combinations.append(recommender.ContentBasedRecommenderSystem(player_games_playtime, game_similarity))
+        print("Instantiating PlaytimeBasedRecommenderSystem with different thresholds and normalizers in serial...")
+        for player_games_playtime in player_games_playtimes:
+            for user_similarity in user_similarities:
+                recommender_combinations.append(recommender.PlaytimeBasedRecommenderSystem(player_games_playtime, user_similarity))
     # now we have all the combinations, we can run them
     # first we need to create a folder to store the results
     if not os.path.exists("results"):

@@ -31,7 +31,8 @@ class AbstractRecommenderData(ABC):
         self.minhashes = {}
 
         # check if there's global minhashes for the current dataframe / csv_filename
-        self.global_minhash_filename = f"{BIN_DATA_PATH}/{csv_filename}_minhashes.pickle" if not isinstance(csv_filename, DataFrame) else f"{BIN_DATA_PATH}/{self.__class__.__name__}_minhashes.pickle"
+        csv_filename_no_ext_or_dir = csv_filename.split("/")[-1].split(".")[0]
+        self.global_minhash_filename = f"{BIN_DATA_PATH}/{csv_filename_no_ext_or_dir}_minhashes.pickle" if not isinstance(csv_filename, DataFrame) else f"{BIN_DATA_PATH}/{self.__class__.__name__}_minhashes.pickle"
         if os.path.exists(self.global_minhash_filename):
             with open(self.global_minhash_filename, "rb") as f:
                 self.minhashes = pickle.load(f)
@@ -43,7 +44,6 @@ class AbstractRecommenderData(ABC):
                 logging.info(f"Loading pickled data for {self.__class__.__name__}...")
                 self.processed_data = pickle.load(f)
                 logging.info(f"Loaded pickled data from {f.name}")
-                return
         except FileNotFoundError:
             pass
         try:
@@ -130,8 +130,9 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         self.dirty = self.processed_data is None
         if not self.dirty:
             self.lshensemble = self.processed_data["lshensemble"]
-        self.norm_file = f"{playtime_normalizer}_{(filename if not isinstance(filename, pd.DataFrame) else 'global')}"
+        self.norm_file = f"{playtime_normalizer}_{((filename.split('/')[-1].split('.')[0]) if not isinstance(filename, pd.DataFrame) else 'global')}"
         self.norm_path = f"{BIN_DATA_PATH}/PGPTData/{self.norm_file}.pickle"
+        atexit.register(self.dump_data)
         if os.path.exists(self.norm_path):
             logging.info("Loading normalized data...")
             with open(self.norm_path, "rb") as f:
@@ -166,17 +167,17 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
                 lsh_ensemble_index.append((steamid, min_hash, user_games_length))
                 self.minhashes[steamid] = (min_hash, user_games_length)
             logging.info("MinHashes computed.")
-            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
+            if not os.path.exists(self.global_minhash_filename):
                 with open(self.global_minhash_filename, "wb") as f:
                     pickle.dump(self.minhashes, f)
         logging.info("Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
+        
         self.processed_data = {
             "lshensemble": self.lshensemble,
         }
         self.dump_data()
-        atexit.register(self.dump_data)
     
     def dump_data(self):
         if self.dirty:
@@ -281,7 +282,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
 class GameTags(AbstractRecommenderData):
     MAX_LENGTH = 20
 
-    def __init__(self, csv_filename: str = "game_tags.csv", weight_threshold=0.75, threshold=0.8, num_perm=128, num_part=32) -> None:
+    def __init__(self, csv_filename: str = "data/game_tags.csv", weight_threshold=0.75, threshold=0.8, num_perm=128, num_part=32) -> None:
         """
         Description:
         ---
@@ -296,8 +297,10 @@ class GameTags(AbstractRecommenderData):
         self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags_ensembles/game_tags_lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
         if not os.path.exists(f"{BIN_DATA_PATH}/game_tags_ensembles/"):
             os.makedirs(f"{BIN_DATA_PATH}/game_tags_ensembles/")
+        
+        self.relevant_by_tag = {}  # tagid -> appids above weight threshold
+        self.idf = {}  # tagid -> inverse document frequency
         if self.processed_data is not None:
-            self.data = self.processed_data["data"]
             self.relevant_by_tag = self.processed_data["relevant_by_tag"]
             self.idf = self.processed_data["idf"]
         if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
@@ -305,12 +308,9 @@ class GameTags(AbstractRecommenderData):
                 self.lshensemble = pickle.load(f)
         if ensemble_loaded and self.processed_data is not None:
             return
-
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
-        self.relevant_by_tag = {}  # tagid -> appids above weight threshold
-        self.idf = {}  # tagid -> inverse document frequency
         logging.info("Computing MinHashes for each game...")
         
         if len(self.minhashes) != 0:
@@ -322,10 +322,14 @@ class GameTags(AbstractRecommenderData):
                 game_tags_length = len(game_tags)
                 lsh_ensemble_index.append((appid, min_hash, game_tags_length))
                 self.minhashes[appid] = (min_hash, game_tags_length)
-                for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
+                if self.processed_data is not None:
+                    continue
+                for row in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
+                    tagid = row["tagid"]
                     if tagid not in self.relevant_by_tag:
                         self.relevant_by_tag[tagid] = set()
                     self.relevant_by_tag[tagid].add(appid)
+                for tagid in game_tags:
                     if tagid not in self.idf:
                         self.idf[tagid] = 0
                     self.idf[tagid] += 1
@@ -339,6 +343,8 @@ class GameTags(AbstractRecommenderData):
                 game_tags_length = len(game_tags)
                 lsh_ensemble_index.append((appid, min_hash, game_tags_length))
                 self.minhashes[appid] = (min_hash, game_tags_length)
+                if self.processed_data is not None:
+                    continue
                 for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
                     if tagid not in self.relevant_by_tag:
                         self.relevant_by_tag[tagid] = set()
@@ -348,7 +354,7 @@ class GameTags(AbstractRecommenderData):
                         self.idf[tagid] = 0
                     self.idf[tagid] += 1
                     
-            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
+            if not os.path.exists(self.global_minhash_filename):
                 with open(self.global_minhash_filename, "wb") as f:
                     logging.info("Dumping global minhashes...")
                     pickle.dump(self.minhashes, f)
@@ -360,17 +366,20 @@ class GameTags(AbstractRecommenderData):
         logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
-        self.processed_data = {
-            "lshensemble": self.lshensemble,
-            "data": self.data,
-            "minhashes": self.minhashes,
-            "relevant_by_tag": self.relevant_by_tag,
-            "idf": self.idf
-        }
-        with open(f"{BIN_DATA_PATH}/game_tags.pickle", "wb") as f:
-            logging.info("Dumping LSH Ensemble and data...")
-            pickle.dump(self.processed_data, f)
-            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+        with open(self.lsh_ensemble_file, "wb") as f:
+            logging.info("Dumping MinHashLSHEnsemble...")
+            pickle.dump(self.lshensemble, f)
+            logging.info(f"Dumped MinHashLSHEnsemble to {f.name}")
+            
+        if self.processed_data is None:
+            self.processed_data = {
+                "relevant_by_tag": self.relevant_by_tag,
+                "idf": self.idf
+            }
+            with open(f"{BIN_DATA_PATH}/game_tags.pickle", "wb") as f:
+                logging.info("Dumping LSH Ensemble and data...")
+                pickle.dump(self.processed_data, f)
+                logging.info(f"Dumped LSH Ensemble and data to {f.name}")
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -455,7 +464,7 @@ class GameTags(AbstractRecommenderData):
         game_tags.reset_index(drop=True, inplace=True)
         # apply the inverse document frequency
         with ChainedAssignment():
-            weights = game_tags.apply(lambda x: x["weight"] * self.idf[x["tagid"]], axis=1)
+            weights = game_tags.apply(lambda x: x["weight"] * self.idf.get(int(x["tagid"]), NotImplementedError), axis=1)
             game_tags["weight"] = weights
         return game_tags.set_index("tagid")["weight"].to_dict()
     
@@ -538,8 +547,8 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
                 game_genres_length = len(game_genres)
                 lsh_ensemble_index.append((appid, min_hash, game_genres_length))
                 self.minhashes[appid] = (min_hash, game_genres_length)
-            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
-                with open(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle", "wb") as f:
+            if not os.path.exists(self.global_minhash_filename):
+                with open(self.global_minhash_filename, "wb") as f:
                     logging.info("Dumping global minhashes...")
                     pickle.dump(self.minhashes, f)
                     logging.info(f"Dumped global minhashes to {f.name}")
@@ -644,8 +653,8 @@ class GameCategories(AbstractRecommenderData):
                 lsh_ensemble_index.append((appid, min_hash, game_categories_length))
                 self.minhashes[appid] = (min_hash, game_categories_length)
             logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
-            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
-                with open(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle", "wb") as f:
+            if not os.path.exists(self.global_minhash_filename):
+                with open(self.global_minhash_filename, "wb") as f:
                     logging.info("Dumping global MinHash...")
                     pickle.dump(self.minhashes, f)
                     logging.info(f"Dumped global MinHash to {f.name}")
@@ -918,8 +927,8 @@ class GameDetails(AbstractRecommenderData):
     def __init__(self, csv_filename: str, rating_multiplier: float = config.RATING_MULTIPLIER):
         super().__init__(csv_filename)
         logging.info("Processing game details and setting index on appid...")
-        self.data = self.data.set_index("appid")
         self.validate_data(self.data)
+        self.data = self.data.set_index("appid")
         logging.info("Finished processing game details")
         self.rating_multiplier = rating_multiplier
 
@@ -1152,7 +1161,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         pass
 
-    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+    def get_similar_games_from_user_games(self, steamid: int, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
         """
         Description:
         ---
@@ -1160,6 +1169,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
 
         Args:
         ---
+        steamid (int): The steamid of the user
         user_games (DataFrame): The games played by the user
 
         Returns:
@@ -1167,7 +1177,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         Tuple[List[int], Dict[int, float]]: A tuple containing a list of the appids of the games and a dictionary containing the weights of the tags
         """
         user_minhash = MinHash(self.recommender_data.minhash_num_perm, hashfunc=trivial_hash)
-        user_weights = self.get_item_weights(user_games)
+        user_weights = self.get_item_weights(steamid, user_games)
         
         user_minhash.update_batch(user_weights.keys())
         similar_games = self.recommender_data.get_minhash_similar_games(user_minhash, len(user_weights.keys()))
@@ -1190,20 +1200,20 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         """
         pass
 
-    def get_item_weights(self, user_games: DataFrame) -> Dict[int, float]:
+    def get_item_weights(self, steamid: int, user_games: DataFrame) -> Dict[int, float]:
         """Gets or generates the item weights for a user.
 
         Args:
+            steamid (int): The steamid of the user
             user_games (DataFrame): The games played by the user, with the playtime_forever column
 
         Returns:
             Dict[int, float]: The item weights for the user
         """
-        steamid = user_games.iloc[0]["steamid"]
         if steamid in self.user_item_weights: return self.user_item_weights[steamid]
         
         item_weight = {}
-        for steamid, row in user_games.iterrows():
+        for _, row in user_games.iterrows():
             appid = row["appid"]
             pseudorating = row["playtime_forever"]
             for itemid, weight in self.get_game_items(appid):
@@ -1884,7 +1894,7 @@ class GameDevelopersSimilarity(AbstractGameSimilarity):
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:n]
     
-    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+    def get_similar_games_from_user_games(self, steamid: int, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
         """Gets similar games from the user's games, only taking into account the developers.
 
         Args:
@@ -1895,7 +1905,7 @@ class GameDevelopersSimilarity(AbstractGameSimilarity):
         ---
         Tuple[List[int], Dict[int, float]]: A list of appids and a dictionary of developerids and their weight
         """
-        user_weights = self.get_item_weights(user_games)
+        user_weights = self.get_item_weights(steamid, user_games)
         appid_scores = {}
         for developer, weight in user_weights.items():
             for appid in self.game_developers.get_games_from_developer(developer):
@@ -1973,18 +1983,19 @@ class GamePublishersSimilarity(AbstractGameSimilarity):
         similarities.sort(key=lambda x: x[1], reverse=True)
         return similarities[:n]
     
-    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+    def get_similar_games_from_user_games(self, steamid: int, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
         """Gets similar games from the user's games, only taking into account the publishers.
 
         Args:
         ---
+        steamid (int): The steamid of the user
         user_games (DataFrame): The user's games
 
         Returns:
         ---
         Tuple[List[int], Dict[int, float]]: A list of appids and a dictionary of publisherids and their weight
         """
-        user_weights = self.get_item_weights(user_games)
+        user_weights = self.get_item_weights(steamid, user_games)
         appid_scores = {}
         for publisher, weight in user_weights.items():
             for appid in self.game_publishers.get_games_from_publisher(publisher):
@@ -2133,7 +2144,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
     def get_similar_games(self, appid: int, n: int) -> List[Tuple[int, float]]:
         raise NotImplementedError("This method is not implemented for this class")
     
-    def get_similar_games_from_user_games(self, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
+    def get_similar_games_from_user_games(self, steamid: int, user_games: DataFrame) -> Tuple[List[int], Dict[int, float]]:
         """
         Description:
         ---
@@ -2141,13 +2152,13 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
 
         Args:
         ---
+        steamid (int): The steamid of the user
         user_games (DataFrame): A DataFrame containing the games owned by the user
 
         Returns:
         ---
         Tuple[List[int], Dict[int, float]]: A tuple containing the appids of the games owned by the user and a dictionary containing the similarity between the perfect game and all the other games
         """
-        steamid = user_games["steamid"].iloc[0]
         perfect_game = self.get_perfect_game_details(steamid, user_games)
 
         # Compute the similarity between the perfect game and all the other games
@@ -2666,7 +2677,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         float: The score of the game for the user
         """
         if not steamid in self.score_results:
-            user_map = self.game_similarity.get_item_weights(self.pgdata.get_user_games(steamid))
+            user_map = self.game_similarity.get_item_weights(steamid, self.pgdata.get_user_games(steamid))
         else:
             user_map = self.score_results[steamid]
         score = 0
@@ -2679,7 +2690,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         return score + (perfect_match) * (score * self.perfect_match_weight) / sum(user_map.values())
 
     def generate_recommendations(self, steamid: int) -> Dict[int, float]:
-        similar_games, item_weights = self.game_similarity.get_similar_games_from_user_games(self.pgdata.get_user_games(steamid))
+        similar_games, item_weights = self.game_similarity.get_similar_games_from_user_games(steamid, self.pgdata.get_user_games(steamid))
         games = {}
         for appid in similar_games:
             real_appid = _appid = appid

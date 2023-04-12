@@ -166,3 +166,4 @@ cython_debug/
 test_output/
 *pickle
 data/
+results/

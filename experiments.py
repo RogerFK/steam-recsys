@@ -21,7 +21,6 @@ import signal
 # If the data isn't there, we will split the data and save it to the data/ folder using the default values.
 import split_train_test
 
-recommender.BIN_DATA_PATH = "bin_data_exp"
 def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, recommender_name, steamid: int):
     # beforehand, check if there's results already
     results_file = os.path.join("results", recommender_name, f"{steamid}_results.csv")
@@ -29,8 +28,12 @@ def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, re
         return (steamid, pd.read_csv(results_file))
     results = recommender_system.recommend(steamid, n=50, filter_owned=True)
     # results_list.append((steamid, results))
-    # store the results, which are a DataFrame
-    results.to_csv(os.path.join("results", recommender_name, f"{steamid}_results.csv"), index=False)
+    # store the results, which are a DataFrame (or if they're a list of tuples, we can convert it to a DataFrame)
+    if not os.path.exists(os.path.join("results", recommender_name)):
+        os.mkdir(os.path.join("results", recommender_name))
+    if isinstance(results, list):
+        results = pd.DataFrame(results, columns=["appid", "score"])
+    results.to_csv(os.path.join("results", recommender_name, f"{steamid}_results.csv"), index=True)
     print(f"Recommender system {recommender_name} finished for steamid {steamid}")
     return (steamid, results)
 
@@ -71,9 +74,9 @@ def main():
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     player_games_playtimes = []
-
+    player_games_thresholds = np.linspace(0.15, 0.75, 5)
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in parallel...")
-    futures = [executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in [0.9] ] # np.linspace(0.1, 0.9, 9)]
+    futures = [executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in player_games_thresholds ] 
     for future in cf.as_completed(futures):
         player_games_playtimes.append(future.result())
     
@@ -86,32 +89,24 @@ def main():
     # also doing this programatically is harder than doing it by hand, I just took this from recommender_shell.py
     
     print("Instantiating Recommender Data with different thresholds in parallel...")
-    game_similarity_thresholds = [0.9] # np.linspace(0.1, 0.9, 9)
+    game_similarity_thresholds = np.linspace(0.3, 0.9, 5)
     game_details = recommender.GameDetails('data/game_details.csv')  # this one is global
+    game_developers = recommender.GameDevelopers('data/game_developers.csv')
+    game_publishers = recommender.GamePublishers('data/game_publishers.csv')
     game_categories_csv = pd.read_csv('data/game_categories.csv')
     game_categories_futures = [executor.submit(recommender.GameCategories, game_categories_csv, threshold) for threshold in game_similarity_thresholds ]
-    game_developers_csv = pd.read_csv('data/game_developers.csv')
-    game_developers_futures = [executor.submit(recommender.GameDevelopers, game_developers_csv, threshold) for threshold in game_similarity_thresholds ]
-    game_publishers_csv = pd.read_csv('data/game_publishers.csv')
-    game_publishers_futures = [executor.submit(recommender.GamePublishers, game_publishers_csv, threshold) for threshold in game_similarity_thresholds ]
     game_genres_csv = pd.read_csv('data/game_genres.csv')
     game_genres_futures = [executor.submit(recommender.GameGenres, game_genres_csv, threshold) for threshold in game_similarity_thresholds ]
     game_tags_csv = pd.read_csv('data/game_tags.csv')
-    idf_weights = [0.1] # np.linspace(0, 0.3, 4)
-    weight_thresholds = [0.75] # np.linspace(0.5, 1, 5)
+    idf_weights = np.linspace(0, 0.3, 4)
+    weight_thresholds = np.linspace(0.5, 1, 5)
     game_tags_futures = [executor.submit(recommender.GameTags, game_tags_csv, weight_threshold, threshold, idf_weight) for threshold in game_similarity_thresholds for weight_threshold in weight_thresholds for idf_weight in idf_weights ]
     game_categories = []
-    game_developers = []
-    game_publishers = []
     game_genres = []
     game_tags = []
-    for future in cf.as_completed(game_categories_futures + game_developers_futures + game_publishers_futures + game_genres_futures + game_tags_futures):
+    for future in cf.as_completed(game_categories_futures + game_genres_futures + game_tags_futures):
         if future in game_categories_futures:
             game_categories.append(future.result())
-        elif future in game_developers_futures:
-            game_developers.append(future.result())
-        elif future in game_publishers_futures:
-            game_publishers.append(future.result())
         elif future in game_genres_futures:
             game_genres.append(future.result())
         elif future in game_tags_futures:
@@ -119,8 +114,6 @@ def main():
         else:
             raise ValueError(f"Future {repr(future)} not in any list" +
                              f"game_categories_futures: {game_categories_futures}\n" + f"game_categories: {game_categories}\n\n"
-                             f"game_developers_futures: {game_developers_futures}\n" + f"game_developers: {game_developers}\n\n"
-                             f"game_publishers_futures: {game_publishers_futures}\n" + f"game_publishers: {game_publishers}\n\n"
                              f"game_genres_futures: {game_genres_futures}\n" + f"game_genres: {game_genres}\n\n"
                              f"game_tags_futures: {game_tags_futures}\n" + f"game_tags: {game_tags}\n\n"
                              )
@@ -130,24 +123,13 @@ def main():
     # game_genres = [future.result() for future in game_genres_futures]
     # game_tags = [future.result() for future in game_tags_futures]
     game_info = {}
-    for thres in range(len(game_similarity_thresholds)):
-        thres = game_similarity_thresholds[thres]
+    for thres in game_similarity_thresholds:
         # find the index of each recommender data in each list of recommender datas where their threshold is equal to thres
         # then use that index to get the recommender data from each list
         game_category = None
         for gc in game_categories:
             if gc.lshensemble.threshold == thres:
                 game_category = gc
-                break
-        game_developer = None
-        for gd in game_developers:
-            if gd.lshensemble.threshold == thres:
-                game_developer = gd
-                break
-        game_publisher = None
-        for gp in game_publishers:
-            if gp.lshensemble.threshold == thres:
-                game_publisher = gp
                 break
         game_genre = None
         for gg in game_genres:
@@ -160,14 +142,13 @@ def main():
                 game_tag = gt
                 break
         
-        game_info[thres] = recommender.GameInfo(game_details, game_category, game_developer, game_publisher, game_genre, game_tag)
-
-    # NOTE: this one and the next ones are fast in single-threaded mode
+        game_info[thres] = recommender.GameInfo(game_details, game_category, game_developers, game_publishers, game_genre, game_tag)
+    # NOTE: this one and the next ones are probably faster in single-threaded mode
     paralellize_everything = False
     if paralellize_everything:
         print("Instantiating GameSimilarities with their respective recommender data in parallel...")
 
-        game_similarity_futures = [executor.submit(game_similarity_type, game_info[thres]) for game_similarity_type in game_similarity_types for thres in range(len(game_similarity_thresholds))]
+        game_similarity_futures = [executor.submit(game_similarity_type, game_info[thres]) for game_similarity_type in game_similarity_types for thres in game_similarity_thresholds]
         game_similarities = [recommender.GameDetailsSimilarity(game_details)]
         for future in cf.as_completed(game_similarity_futures):
             game_similarities.append(future.result())
@@ -181,14 +162,14 @@ def main():
         print("Instantiating GameSimilarities and UserSimilarities with their respective recommender data in serial...")
         game_similarities = [recommender.GameDetailsSimilarity(game_details)]
         for game_similarity_type in game_similarity_types:
-            for thres in range(len(game_similarity_thresholds)):
+            for thres in game_similarity_thresholds:
                 game_similarities.append(game_similarity_type(game_info[thres]))
         user_similarities = []
         for user_similarity_type in user_similarity_types:
             for pgdata in player_games_playtimes:
                 user_similarities.append(user_similarity_type(pgdata))
 
-    recommender_combinations = [recommender.RandomRecommenderSystem(), recommender.RatingBasedRecommenderSystem(game_details, train_data)]
+    recommender_combinations = [recommender.RandomRecommenderSystem(), recommender.RatingBasedRecommenderSystem(game_details, player_games_playtimes[0])]
     if paralellize_everything:
         print("Instantiating ContentBasedRecommenderSystem with different thresholds and normalizers in parallel...")
         futures = [executor.submit(recommender.ContentBasedRecommenderSystem, player_games_playtime, game_similarity) for player_games_playtime in player_games_playtimes for game_similarity in game_similarities]
@@ -212,11 +193,12 @@ def main():
     if not os.path.exists("results"):
         os.mkdir("results")
     # but get the steamids first
-    steamids = test_data["steamid"].unique()
+    steamids = test_data["steamid"].unique()[:12]  # TODO change this to [:12] when testing
     # now we can run the experiments
     for recommender_system in recommender_combinations:
         # first we need to get the name of the recommender system
         recommender_name = repr(recommender_system)
+        start_time = time.time()
         # before we run the recommender system, check if there's already results
         if os.path.exists(os.path.join("results", recommender_name, "results.csv")):
             print(f"Recommender system {recommender_name} already ran, skipping...")
@@ -228,14 +210,14 @@ def main():
         # now we can run the recommender system, saving results to calculate precision and recall later
         results_list = []
         if isinstance(recommender_system, recommender.AbstractRecommenderSystem):
-            #for steamid in steamids:
-            #    recommend_user(recommender_system, recommender_name, steamid)
             futures = [executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
             for future in cf.as_completed(futures):
                 results_list.append(future.result())
         else:
             raise ValueError("Recommender system is not an instance of AbstractRecommenderSystem")
-        
+        finish_time = time.time() - start_time
+        with open(os.path.join("results", recommender_name, "time_in_seconds.txt"), "w") as f:
+            f.write(str(finish_time))
         # now we can calculate precision and recall, comparing against the test data
         print(f"Calculating precision and recall for {recommender_name}...")
         # now we can calculate precision and recall
@@ -256,16 +238,35 @@ def main():
 
             # now we can calculate precision and recall
             if isinstance(results, pd.DataFrame):
-                precision.append(len(set(results["appid"]).intersection(test_data_games)) / len(results))
-                precision_at_5.append(len(set(results["appid"].iloc[:5]).intersection(test_data_games)) / 5)
-                precision_at_10.append(len(set(results["appid"].iloc[:10]).intersection(test_data_games)) / 10)
-                precision_at_12.append(len(set(results["appid"].iloc[:12]).intersection(test_data_games)) / 12)
-                precision_at_20.append(len(set(results["appid"].iloc[:20]).intersection(test_data_games)) / 20)
-                recall.append(len(set(results["appid"]).intersection(test_data_games)) / len(test_data_games))
-                recall_at_5.append(len(set(results["appid"].iloc[:5]).intersection(test_data_games)) / len(test_data_games))
-                recall_at_10.append(len(set(results["appid"].iloc[:10]).intersection(test_data_games)) / len(test_data_games))
-                recall_at_12.append(len(set(results["appid"].iloc[:12]).intersection(test_data_games)) / len(test_data_games))
-                recall_at_20.append(len(set(results["appid"].iloc[:20]).intersection(test_data_games)) / len(test_data_games))
+                if "appid" not in results.columns:
+                    results = results.index.values  # assume the index is the appid
+                    if isinstance(results, np.int64):
+                        results = [results]
+                else:
+                    results = results["appid"].values
+                if len(results) == 0:
+                    print(f"User {steamid} has no recommendations for {recommender_name}, might want to check")
+                    precision.append(0)
+                    precision_at_5.append(0)
+                    precision_at_10.append(0)
+                    precision_at_12.append(0)
+                    precision_at_20.append(0)
+                    recall.append(0)
+                    recall_at_5.append(0)
+                    recall_at_10.append(0)
+                    recall_at_12.append(0)
+                    recall_at_20.append(0)
+                    continue
+                precision.append(len(set(results).intersection(test_data_games)) / len(results))
+                precision_at_5.append(len(set(results[:5]).intersection(test_data_games)) / 5)
+                precision_at_10.append(len(set(results[:10]).intersection(test_data_games)) / 10)
+                precision_at_12.append(len(set(results[:12]).intersection(test_data_games)) / 12)
+                precision_at_20.append(len(set(results[:20]).intersection(test_data_games)) / 20)
+                recall.append(len(set(results).intersection(test_data_games)) / len(test_data_games))
+                recall_at_5.append(len(set(results[:5]).intersection(test_data_games)) / len(test_data_games))
+                recall_at_10.append(len(set(results[:10]).intersection(test_data_games)) / len(test_data_games))
+                recall_at_12.append(len(set(results[:12]).intersection(test_data_games)) / len(test_data_games))
+                recall_at_20.append(len(set(results[:20]).intersection(test_data_games)) / len(test_data_games))
             else:
                 raise ValueError(f"Results for {recommender_name} and {steamid} is not a DataFrame")
             
@@ -356,10 +357,26 @@ def main():
     fig.savefig(os.path.join("results", "results.png"))
     fig.show()
 
+def plot_results():
+    # TODO: plot the results, read the results from the results folder
+    pass
 
 if __name__ == "__main__":
     try:
-        main()
+        # argparse to skip to results
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--skip_rec", action="store_true", help="Skip running the recommender systems and go straight to the results")
+        # also to skip plotting results
+        parser.add_argument("--skip_plot", action="store_true", help="Skip plotting the results")
+        args = parser.parse_args()
+        if args.skip_rec:
+            print("Skipping running recommender systems...")
+        else:
+            main()
+        if args.skip_plot:
+            print("Skipping plotting results...")
+        else:
+            plot_results()
     except KeyboardInterrupt:
         print("**************\nKeyboardInterrupt detected. Stopping executor...\n**************")
         executor.shutdown(wait=False, cancel_futures=True)

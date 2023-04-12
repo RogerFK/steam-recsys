@@ -31,10 +31,10 @@ class AbstractRecommenderData(ABC):
         self.minhashes = {}
 
         # check if there's global minhashes for the current dataframe / csv_filename
-        csv_filename_no_ext_or_dir = csv_filename.split("/")[-1].split(".")[0]
+        csv_filename_no_ext_or_dir = csv_filename.split("/")[-1].split(".")[0] if not isinstance(csv_filename, DataFrame) else self.__class__.__name__
         if not os.path.exists(f"{BIN_DATA_PATH}/minhashes"):
             os.makedirs(f"{BIN_DATA_PATH}/minhashes")
-        self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle" if not isinstance(csv_filename, DataFrame) else f"{BIN_DATA_PATH}/{self.__class__.__name__}_minhashes.pickle"
+        self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle"
         if os.path.exists(self.global_minhash_filename):
             with open(self.global_minhash_filename, "rb") as f:
                 self.minhashes = pickle.load(f)
@@ -54,14 +54,16 @@ class AbstractRecommenderData(ABC):
             if isinstance(csv_filename, DataFrame):
                 logging.info(f"Loading {self.__class__.__name__} data from DataFrame...")
                 self.data = csv_filename
+                logging.info(f"Loaded {self.__class__.__name__} data from DataFrame")
             else:
                 logging.info(f"Loading {self.__class__.__name__} data from {csv_filename}...")
                 self.data = pd.read_csv(csv_filename)
+                logging.info(f"Loaded {self.__class__.__name__} data from {csv_filename}")
         except FileNotFoundError:
             pass
     
     def __getitem__(self, key):
-        return self.data[key]
+        return self.data.loc[key]
     
     @abstractmethod
     def rating(self, *args, **kwargs):
@@ -126,13 +128,14 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         if not os.path.exists(f"{BIN_DATA_PATH}/PGPTData"):
             os.makedirs(f"{BIN_DATA_PATH}/PGPTData")
         self.pickle_name = self.pickle_name_fmt.format(f"{threshold:.2f}", num_perm, num_part)
+        self.repr_name = f"PlayerGamesPlaytime({playtime_normalizer}, {threshold:.2f}, {num_perm}, {num_part})"
         super().__init__(filename, self.pickle_name)  # load the processed data if it exists
         self.playtime_normalizer = playtime_normalizer
         self.minhash_num_perm = num_perm
         self.dirty = self.processed_data is None
         if not self.dirty:
             self.lshensemble = self.processed_data["lshensemble"]
-        self.norm_file = f"{playtime_normalizer}_{((filename.split('/')[-1].split('.')[0]) if not isinstance(filename, pd.DataFrame) else 'global')}"
+        self.norm_file = f"{playtime_normalizer}_{((filename.split('/')[-1].split('.')[0]) if not isinstance(filename, pd.DataFrame) else 'PGPT')}"
         self.norm_path = f"{BIN_DATA_PATH}/PGPTData/{self.norm_file}.pickle"
         atexit.register(self.dump_data)
         if os.path.exists(self.norm_path):
@@ -279,7 +282,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         self.dirty = True
     
     def __repr__(self) -> str:
-        return f"PlayerGamesPlaytimeData({self.pickle_name.removeprefix('PGPTData/')})"
+        return self.repr_name
 
 class GameTags(AbstractRecommenderData):
     MAX_LENGTH = 20
@@ -296,24 +299,33 @@ class GameTags(AbstractRecommenderData):
         """
         super().__init__(csv_filename, pickle_filename=None)
         self.minhash_num_perm = num_perm
+        self.repr_name = f"GameTags(thres={threshold:.2f}, wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
         if not os.path.exists(f"{BIN_DATA_PATH}/game_tags/"):
             os.makedirs(f"{BIN_DATA_PATH}/game_tags/")
         self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags/lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
         
         self.relevant_by_tag = {}  # tagid -> appids above weight threshold
         self.idf = {}  # tagid -> inverse document frequency
-        self.idf_file = f"{BIN_DATA_PATH}/game_tags/idfw{idf_weight}.pickle"
-        self.relevant_by_tag_file = f"{BIN_DATA_PATH}/game_tags/relevant{weight_threshold}.pickle"
+        self.idf_file = f"{BIN_DATA_PATH}/game_tags/idf.pickle"
+        self.idf_weight = idf_weight
+        self.relevant_by_tag_file = f"{BIN_DATA_PATH}/game_tags/relevant{weight_threshold:.2f}.pickle"
         if idf_loaded := os.path.exists(self.idf_file):
             with open(self.idf_file, "rb") as f:
+                logging.info("Loading IDFs from global file...")
                 self.idf = pickle.load(f)
+                logging.info("Loaded IDFs from file.")
         if rele_loaded := os.path.exists(self.relevant_by_tag_file):
             with open(self.relevant_by_tag_file, "rb") as f:
+                logging.info(f"Loading relevant tags from {f.name}...")
                 self.relevant_by_tag = pickle.load(f)
+                logging.info("Loaded relevant tags from file.")
         if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
             with open(self.lsh_ensemble_file, "rb") as f:
+                logging.info(f"Loading LSH Ensemble from {f.name}...")
                 self.lshensemble = pickle.load(f)
+                logging.info("Loaded LSH Ensemble from file.")
         if ensemble_loaded and rele_loaded and idf_loaded:
+            logging.info("Done. Using previous LSH Ensemble, IDFs, and relevant tags.")
             return
         self.validate_data(self.data)
         if not ensemble_loaded:
@@ -420,7 +432,7 @@ class GameTags(AbstractRecommenderData):
         vals = self.data.loc[(self.data["appid"] == appid) & (self.data["tagid"] == tagid), "weight"].values
         if len(vals) == 0:
             return 0
-        return vals[0] * self.idf[tagid]
+        return vals[0] * self.idf[tagid] * self.idf_weight + max(1 - self.idf_weight) * vals[0]
     
     def get_lsh_similar_games(self, appid: int) -> Generator[int, None, None]:
         """Gets all similar games beyond the threshold set in the constructor.
@@ -473,7 +485,7 @@ class GameTags(AbstractRecommenderData):
         game_tags.reset_index(drop=True, inplace=True)
         # apply the inverse document frequency
         with ChainedAssignment():
-            weights = game_tags.apply(lambda x: x["weight"] * self.idf.get(int(x["tagid"]), NotImplementedError), axis=1)
+            weights = game_tags.apply(lambda x: (x["weight"] * self.idf.get(int(x["tagid"]) * self.idf_weight + max(1 - self.idf_weight, 0) * (x["weight"])), NotImplementedError), axis=1)
             game_tags["weight"] = weights
         return game_tags.set_index("tagid")["weight"].to_dict()
     
@@ -529,12 +541,16 @@ class GameTags(AbstractRecommenderData):
         # TODO
         return tagid
         # return self.tag_names[tagid]
+    
+    def __repr__(self):
+        return self.repr_name
 
 # this class below is the same as GameTagsData but uses game_genres.csv instead
 class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limited, so this is not very useful. Hence, we won't waste much time on it.
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
-        self.pickle_filename = f"game_genres_thres{threshold}_perm{num_perm}_part{num_part}"
+        self.pickle_filename = f"game_genres_thres{threshold:.2f}_perm{num_perm}_part{num_part}"
         super().__init__(csv_filename, self.pickle_filename)
+        self.repr_name = f"GameGenres(thres={threshold:.2f}, perm={num_perm}, part={num_part})"
         self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
@@ -629,6 +645,9 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
         game_genres = self.data.loc[self.data["appid"] == appid]
         game_genres.reset_index(drop=True, inplace=True)
         return set(game_genres["genreid"].values)
+    
+    def __repr__(self):
+        return self.repr_name
 
 # NOTE: like game genres, game categories aren't very useful for recommending, but might be useful for filtering.
 # For example, if a user only wants multiplayer games 'Multiplayer' is also a tag and has a weight unlike the category
@@ -637,7 +656,8 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
 # Thus, we won't waste much time on this either.
 class GameCategories(AbstractRecommenderData):
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
-        self.pickle_filename = f"game_categories_thres{threshold}_perm{num_perm}_part{num_part}"
+        self.pickle_filename = f"game_categories_thres{threshold:.2f}_perm{num_perm}_part{num_part}"
+        self.repr_name = f"GameCategories(thres={threshold:.2f}, perm={num_perm}, part={num_part})"
         super().__init__(csv_filename, self.pickle_filename)
         self.minhash_num_perm = num_perm
         if self.processed_data is not None:
@@ -672,13 +692,12 @@ class GameCategories(AbstractRecommenderData):
         logging.info("MinHashLSHEnsemble index computed.")
         self.processed_data = {
             "lshensemble": self.lshensemble,
-            "data": self.data,
         }
         
         with open(f"{BIN_DATA_PATH}/{self.pickle_filename}.pickle", "wb") as f:
-            logging.info("Dumping LSH Ensemble and data...")
+            logging.info("Dumping LSH Ensemble...")
             pickle.dump(self.processed_data, f)
-            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+            logging.info(f"Dumped LSH Ensemble to {f.name}")
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -736,19 +755,15 @@ class GameCategories(AbstractRecommenderData):
         game_categories = self.data.loc[self.data["appid"] == appid]
         game_categories.reset_index(drop=True, inplace=True)
         return set(game_categories["categoryid"].values)
+    
+    def __repr__(self) -> str:
+        return self.repr_name
 
 class GameDevelopers(AbstractRecommenderData):
     def __init__(self, gd_csv_filename: str):
-        pickle_filename = "game_developers"
-        super().__init__(gd_csv_filename, pickle_filename)
-        if self.processed_data is not None:
-            self.data = self.processed_data
-            return
-        self.processed_data = self.data
-        with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "wb") as f:
-            logging.info("Dumping LSH Ensemble and data...")
-            pickle.dump(self.processed_data, f)
-            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+        super().__init__(gd_csv_filename, None)
+        self.validate_data(self.data)
+        self.data.set_index("appid", inplace=True)
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -769,9 +784,15 @@ class GameDevelopers(AbstractRecommenderData):
         ---
         Set[int]: The developers the game has
         """
-        game_developers = self.data.loc[self.data["appid"] == appid]
-        game_developers.reset_index(drop=True, inplace=True)
-        return set(game_developers["developerid"].values)
+        try:
+            game_developers = self.data.loc[appid]["developerid"]
+            # game_developers.reset_index(drop=True, inplace=True)
+            if isinstance(game_developers, pd.Series):
+                return set(game_developers)
+            else:
+                return set([game_developers])
+        except KeyError:
+            return set()
     
     def rating(self, appid, developer) -> float:
         """
@@ -788,8 +809,7 @@ class GameDevelopers(AbstractRecommenderData):
         ---
         * float: Their "rating" for the game
         """
-        vals = self.data.loc[(self.data["appid"] == appid) & (self.data["developerid"] == developer)].values
-        return 0.0 if len(vals) == 0 else 1.0
+        return 1.0 if developer in self.get_developers(appid) else 0.0
 
     def get_games_from_developer(self, developerid: int) -> Set[int]:
         """Gets the games a developer has made.
@@ -803,8 +823,9 @@ class GameDevelopers(AbstractRecommenderData):
         Set[int]: The games the developer has made
         """
         dev_games = self.data.loc[self.data["developerid"] == developerid]
-        dev_games.reset_index(drop=True, inplace=True)
-        return set(dev_games["appid"].values)
+        #dev_games.reset_index(drop=True, inplace=True)
+        #return set(dev_games["appid"].values)
+        return set(dev_games.index.values)
     
     def get_games_from_developers_of_game(self, appid) -> Dict[int, Set[int]]:
         """Gets the games the developer/s of a game has made.
@@ -823,18 +844,14 @@ class GameDevelopers(AbstractRecommenderData):
             games[devid] = self.get_games_from_developer(devid)
         return games
     
+    def __repr__(self) -> str:
+        return "GameDevelopers"
+    
 class GamePublishers(AbstractRecommenderData):
     def __init__(self, csv_filename: str):
-        pickle_filename = "game_publishers"
-        super().__init__(csv_filename, pickle_filename)
-        if self.processed_data is not None:
-            self.data = self.processed_data
-            return
-        self.processed_data = self.data
-        with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "wb") as f:
-            logging.info("Dumping LSH Ensemble and data...")
-            pickle.dump(self.processed_data, f)
-            logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+        super().__init__(csv_filename, None)
+        self.validate_data(self.data)
+        self.data.set_index("appid", inplace=True)
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -855,9 +872,14 @@ class GamePublishers(AbstractRecommenderData):
         ---
         Set[int]: The publishers the game has
         """
-        game_publishers = self.data.loc[self.data["appid"] == appid]
-        game_publishers.reset_index(drop=True, inplace=True)
-        return set(game_publishers["publisherid"].values)
+        try:
+            game_publishers = self.data.loc[appid]["publisherid"]
+            if isinstance(game_publishers, pd.Series):
+                return set(game_publishers)
+            else:
+                return set([game_publishers])
+        except KeyError:
+            return set()
     
     def rating(self, appid, publisher) -> float:
         """
@@ -874,8 +896,7 @@ class GamePublishers(AbstractRecommenderData):
         ---
         * float: Their "rating" for the game
         """
-        vals = self.data.loc[(self.data["appid"] == appid) & (self.data["publisherid"] == publisher)].values
-        return 0.0 if len(vals) == 0 else 1.0
+        return 1.0 if publisher in self.get_publishers(appid) else 0.0
     
     def get_games_from_publisher(self, publisherid: int) -> Set[int]:
         """Gets the games a publisher has published.
@@ -889,8 +910,9 @@ class GamePublishers(AbstractRecommenderData):
         Set[int]: The games the publisher has published
         """
         pub_games = self.data.loc[self.data["publisherid"] == publisherid]
-        pub_games.reset_index(drop=True, inplace=True)
-        return set(pub_games["appid"].values)
+        # pub_games.reset_index(drop=True, inplace=True)
+        # return set(pub_games["appid"].values)
+        return set(pub_games.index.values)
     
     def get_games_from_publishers_of_game(self, appid) -> Dict[int, Set[int]]:
         """Gets the games the publisher/s of a game has published.
@@ -908,7 +930,9 @@ class GamePublishers(AbstractRecommenderData):
         for pubid in pubids:
             games[pubid] = self.get_games_from_publisher(pubid)
         return games
-
+    
+    def __repr__(self) -> str:
+        return "GamePublishers"
 
 class GameDetails(AbstractRecommenderData):
     class GameBase:
@@ -1018,6 +1042,9 @@ class GameDetails(AbstractRecommenderData):
         * List[Game]: The list of Game objects for all games
         """
         return [self.GameBase(appid, row, self.rating_multiplier) for appid, row in self.data.iterrows()]
+    
+    def __repr__(self):
+        return f"GameDetails(rating_multiplier={self.rating_multiplier})"
 
 class Game(GameDetails.GameBase):
     def __init__(self, game_details_row, game_categories: Set[int], game_developers: Set[int], game_publishers: Set[int], game_genres: Set[int], game_tags: Dict[int, float], rating_multiplier: float = config.RATING_MULTIPLIER):
@@ -1042,6 +1069,8 @@ class GameInfo():
         self.game_publishers = game_publishers
         self.game_genres = game_genres
         self.game_tags = game_tags
+        if any([game_details is None, game_categories is None, game_developers is None, game_publishers is None, game_genres is None, game_tags is None]):
+            raise ValueError("All arguments must be provided, and none should be None")
     
     def _get_game_from_row(self, row) -> Game:
         """
@@ -1243,7 +1272,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         return weight * pseudorating
     
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__} (recommender_data={self.recommender_data})"
+        return f"{self.__class__.__name__} ({self.recommender_data})"
 
 class RawUserSimilarity(AbstractSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime, parallel=True) -> None:
@@ -1363,7 +1392,7 @@ class RawUserSimilarity(AbstractSimilarity):
     
     
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(pgdata={self.pgdata})"
+        return f"{self.__class__.__name__}(pgdata={repr(self.pgdata)})"
 
 class CosineUserSimilarity(RawUserSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime, precompute: bool = True, parallel=True) -> None:
@@ -1624,6 +1653,9 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         List[Tuple[int, float]]: A list of tuples containing the tagid and weight of the tags of the game
         """
         return list(self.game_tags.get_tags(appid).items())
+    
+    def __repr__(self) -> str:
+        return f"RawGameTagSimilarity with game_tags={self.game_tags}"
 
 class CosineGameTagSimilarity(RawGameTagSimilarity):
     def __init__(self, game_tags_or_game_info: Union[GameTags, GameInfo]) -> None:
@@ -2212,7 +2244,13 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         perfect_game["name"] = f"Perfect Game for {steamid}"
         # NOTE: This prioritizes recent games, maybe we should do the mean of the release dates instead
         # perfect_game["release_date"] = datetime.now().strftime("%b %d, %Y")
-        all_release_dates = [datetime.strptime(release_date, "%b %d, %Y") for release_date in user_games["release_date"] if release_date != "\\N"]
+        all_release_dates = []
+        for release_date in user_games["release_date"]:
+            if release_date != "\\N":
+                try:
+                    all_release_dates.append(datetime.strptime(release_date, "%b %d, %Y"))
+                except:
+                    pass
         # compute the average release date
         # NOTE We should compute the average taking into account the playtime of each game
         reference_date = datetime.strptime("Jan 01, 1970", "%b %d, %Y")
@@ -2243,7 +2281,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         perfect_game = self.get_perfect_game_details(steamid, None)
         return self.similarity(perfect_game, self.game_details.get_game(appid))
 
-class WeightedGameSimilaritiesSimilarity(AbstractGameSimilarity): # TODO unused, maybe remove
+class WeightedGameSimilaritiesSimilarity(): # TODO unused, maybe remove
     def __init__(self, game_similarities: List[Tuple[AbstractGameSimilarity, float]]) -> None:
         """
         Args:
@@ -2394,10 +2432,10 @@ class AbstractRecommenderSystem(ABC):
         raise NotImplementedError
 
     def validate_steamid(self, steamid: int):
-        if not isinstance(steamid, int):
-            raise TypeError("steamid must be an int")
+        if not isinstance(steamid, int) and not isinstance(steamid, np.int64):
+            raise TypeError(f"steamid must be an int/numpy.int64, {type(steamid)} given")
         if steamid < 76500000000000000:
-            raise ValueError("invalid steamid")
+            raise ValueError("invalid steamid: " + str(steamid))
 
     def validate_n(self, n: int):
         if not isinstance(n, int):
@@ -2418,15 +2456,19 @@ class AbstractRecommenderSystem(ABC):
     def load_scores(self, filename: str):
         with open(filename, "rb") as f:
             self.score_results = pickle.load(f)
+    
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}"
 
 class RandomRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, csv_filename: str = "data/appids.csv"):
         self.data = pd.read_csv(csv_filename)
 
-    def recommend(self, steamid: int = 0, n: int = 10) -> DataFrame:
+    def recommend(self, steamid: int = 0, n: int = 10, filter_owned = False) -> DataFrame:
         # it's ordered by (priority, appid), from lower to upper
         # when the priority queue is full, it will pop the lowest priority
         priority_queue = PriorityQueue(n + 1)
+        _ = filter_owned  # I don't like unused variables
 
         # pick random games from the dataset and give them a random score
         # the score is a random number between 0 and 5
@@ -2502,7 +2544,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
             raise ValueError("data must have a 'playtime_forever' column")
     
     def __repr__(self) -> str:
-        return f"PlaytimeBasedRecommenderSystem(similarity={self.similarity})"
+        return f"PlaytimeBasedRecommenderSystem with {self.similarity}"
 
 class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, game_details: GameDetails, pgdata: PlayerGamesPlaytime = None):
@@ -2529,7 +2571,7 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
         self.score_results = OrderedDict(sorted(score_results.items(), key=lambda item: item[1], reverse=True))
 
     
-    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = True) -> DataFrame:
+    def recommend(self, steamid: int, n: int = 10, filter_owned: bool = False) -> DataFrame:
         """Gets the top n games from games similar to the MinHash of the user,
         weighted by the PlayerGamesPlaytime normalized pseudoratings
 
@@ -2576,6 +2618,12 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
         float: The score of the game for the user
         """
         return self.score_results[appid]
+    
+    def generate_recommendations(self, steamid: int) -> Dict[int, float]:
+        return self.score_results
+    
+    def __repr__(self) -> str:
+        return f"RatingBasedRecommenderSystem"  #(game_details={self.game_details})"
 class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, perfect_match_weight = 0.2):
         """
@@ -2630,7 +2678,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         self.perfect_match_weight = perfect_match_weight
         self.score_results_from_top_games = {}
 
-    def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = True) -> DataFrame:
+    def recommend_from_top_games(self, steamid: int, n: int = 10, n_games = 20, filter_owned: bool = False) -> DataFrame:
         """Gets the rough top n games from games similar to the top games of the user
 
         Args:
@@ -2638,7 +2686,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         steamid (int): The steamid of the user
         n (int, optional): The number of games to return. Defaults to 10. -1 for all
         n_games (int, optional): The number of top games to use. Defaults to 20.
-        filter_owned (bool, optional): Whether to filter out games that the user already owns. Defaults to True.
+        filter_owned (bool, optional): Whether to filter out games that the user already owns. Defaults to False.
 
         Returns:
         ---
@@ -2722,7 +2770,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         return score + (perfect_match) * (score * self.perfect_match_weight) / sum(item_weights.values())
     
     def __repr__(self) -> str:
-        return f"Recommender from {self.game_similarity.__class__.__name__}"
+        return f"Recommender from {repr(self.game_similarity)}"
 
 class HybridRecommenderSystem(AbstractRecommenderSystem):
     EXPAND_FURTHER = 1.5
@@ -2797,5 +2845,8 @@ class HybridRecommenderSystem(AbstractRecommenderSystem):
             score += recommender.score(steamid, appid) * weight
             weight_total += weight
         return score / weight_total
+    
+    def __repr__(self) -> str:
+        return f"HybridRecommenderSystem from {', '.join([f'({repr(recommender)}, {weight})' for recommender, weight in self.recommenders])}"
 
 # TODO Game Details/Game Info based recommender system, idea: something like lite "Machine Learning", where each user has a "profile" of games they like, and the system recommends games based on that

@@ -32,7 +32,9 @@ class AbstractRecommenderData(ABC):
 
         # check if there's global minhashes for the current dataframe / csv_filename
         csv_filename_no_ext_or_dir = csv_filename.split("/")[-1].split(".")[0]
-        self.global_minhash_filename = f"{BIN_DATA_PATH}/{csv_filename_no_ext_or_dir}_minhashes.pickle" if not isinstance(csv_filename, DataFrame) else f"{BIN_DATA_PATH}/{self.__class__.__name__}_minhashes.pickle"
+        if not os.path.exists(f"{BIN_DATA_PATH}/minhashes"):
+            os.makedirs(f"{BIN_DATA_PATH}/minhashes")
+        self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle" if not isinstance(csv_filename, DataFrame) else f"{BIN_DATA_PATH}/{self.__class__.__name__}_minhashes.pickle"
         if os.path.exists(self.global_minhash_filename):
             with open(self.global_minhash_filename, "rb") as f:
                 self.minhashes = pickle.load(f)
@@ -282,7 +284,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
 class GameTags(AbstractRecommenderData):
     MAX_LENGTH = 20
 
-    def __init__(self, csv_filename: str = "data/game_tags.csv", weight_threshold=0.75, threshold=0.8, num_perm=128, num_part=32) -> None:
+    def __init__(self, csv_filename: str = "data/game_tags.csv", weight_threshold=0.75, threshold=0.8, idf_weight=0.2, num_perm=128, num_part=32) -> None:
         """
         Description:
         ---
@@ -292,24 +294,30 @@ class GameTags(AbstractRecommenderData):
         ---
         filename (str): The filename of the game tags data. Defaults to "game_tags.csv".
         """
-        super().__init__(csv_filename, pickle_filename="game_tags")  # game tag data is global except for the LSH index
+        super().__init__(csv_filename, pickle_filename=None)
         self.minhash_num_perm = num_perm
-        self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags_ensembles/game_tags_lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
-        if not os.path.exists(f"{BIN_DATA_PATH}/game_tags_ensembles/"):
-            os.makedirs(f"{BIN_DATA_PATH}/game_tags_ensembles/")
+        if not os.path.exists(f"{BIN_DATA_PATH}/game_tags/"):
+            os.makedirs(f"{BIN_DATA_PATH}/game_tags/")
+        self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags/lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
         
         self.relevant_by_tag = {}  # tagid -> appids above weight threshold
         self.idf = {}  # tagid -> inverse document frequency
-        if self.processed_data is not None:
-            self.relevant_by_tag = self.processed_data["relevant_by_tag"]
-            self.idf = self.processed_data["idf"]
+        self.idf_file = f"{BIN_DATA_PATH}/game_tags/idfw{idf_weight}.pickle"
+        self.relevant_by_tag_file = f"{BIN_DATA_PATH}/game_tags/relevant{weight_threshold}.pickle"
+        if idf_loaded := os.path.exists(self.idf_file):
+            with open(self.idf_file, "rb") as f:
+                self.idf = pickle.load(f)
+        if rele_loaded := os.path.exists(self.relevant_by_tag_file):
+            with open(self.relevant_by_tag_file, "rb") as f:
+                self.relevant_by_tag = pickle.load(f)
         if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
             with open(self.lsh_ensemble_file, "rb") as f:
                 self.lshensemble = pickle.load(f)
-        if ensemble_loaded and self.processed_data is not None:
+        if ensemble_loaded and rele_loaded and idf_loaded:
             return
         self.validate_data(self.data)
-        self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
+        if not ensemble_loaded:
+            self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
         logging.info("Computing MinHashes for each game...")
         
@@ -324,8 +332,7 @@ class GameTags(AbstractRecommenderData):
                 self.minhashes[appid] = (min_hash, game_tags_length)
                 if self.processed_data is not None:
                     continue
-                for row in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
-                    tagid = row["tagid"]
+                for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
                     if tagid not in self.relevant_by_tag:
                         self.relevant_by_tag[tagid] = set()
                     self.relevant_by_tag[tagid].add(appid)
@@ -335,6 +342,7 @@ class GameTags(AbstractRecommenderData):
                     self.idf[tagid] += 1
         else:
             logging.info("Computing MinHashes for each game...")
+            ensemble_loaded = False
             for appid, row in self.data.groupby("appid"):
                 # we only want to store the appids, we'll get the weights later
                 game_tags = row["tagid"].values
@@ -362,24 +370,25 @@ class GameTags(AbstractRecommenderData):
         
         total_games = self.data["appid"].nunique()
         for tagid in self.idf:
-            self.idf[tagid] = math.log(total_games / self.idf[tagid])
-        logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
-        self.lshensemble.index(lsh_ensemble_index)
-        logging.info("MinHashLSHEnsemble index computed.")
-        with open(self.lsh_ensemble_file, "wb") as f:
-            logging.info("Dumping MinHashLSHEnsemble...")
-            pickle.dump(self.lshensemble, f)
-            logging.info(f"Dumped MinHashLSHEnsemble to {f.name}")
-            
-        if self.processed_data is None:
-            self.processed_data = {
-                "relevant_by_tag": self.relevant_by_tag,
-                "idf": self.idf
-            }
-            with open(f"{BIN_DATA_PATH}/game_tags.pickle", "wb") as f:
-                logging.info("Dumping LSH Ensemble and data...")
-                pickle.dump(self.processed_data, f)
-                logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+            self.idf[tagid] = idf_weight * math.log(total_games / self.idf[tagid]) + max(1.0 - idf_weight, 0)
+        if not ensemble_loaded:
+            logging.info(f"MinHashes computed. Computing MinHashLSHEnsemble index...")
+            self.lshensemble.index(lsh_ensemble_index)
+            logging.info("MinHashLSHEnsemble index computed.")
+            with open(self.lsh_ensemble_file, "wb") as f:
+                logging.info("Dumping MinHashLSHEnsemble...")
+                pickle.dump(self.lshensemble, f)
+                logging.info(f"Dumped MinHashLSHEnsemble to {f.name}")
+        if not rele_loaded:
+            with open(self.relevant_by_tag_file, "wb") as f:
+                logging.info("Dumping relevant_by_tag...")
+                pickle.dump(self.relevant_by_tag, f)
+                logging.info(f"Dumped relevant_by_tag to {f.name}")
+        if not idf_loaded:
+            with open(self.idf_file, "wb") as f:
+                logging.info("Dumping idf...")
+                pickle.dump(self.idf, f)
+                logging.info(f"Dumped idf to {f.name}")
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -1361,6 +1370,9 @@ class CosineUserSimilarity(RawUserSimilarity):
         super().__init__(pgdata, parallel)
         self.precomputed = precompute
         self.dirty = True
+        if not os.path.exists(f"{BIN_DATA_PATH}/cosine_user_norms"):
+            os.makedirs(f"{BIN_DATA_PATH}/cosine_user_norms")
+        self.user_norms_file = f"{BIN_DATA_PATH}/cosine_user_norms/{self.pgdata.norm_file}.pickle"
         if precompute:
             # Check if there's pickled data in BIN_DATA_PATH\{self.pgdata.norm_file}_cosine_user_norms.pickle
             self.load_norms()
@@ -1376,15 +1388,15 @@ class CosineUserSimilarity(RawUserSimilarity):
         atexit.register(self.save_norms_if_dirty)
     
     def load_norms(self):
-        if os.path.exists(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_cosine_user_norms.pickle"):
-            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_cosine_user_norms.pickle", "rb") as f:
+        if os.path.exists(self.user_norms_file):
+            with open(self.user_norms_file, "rb") as f:
                 self.norms = pickle.load(f)
                 self.dirty = False
     
     def save_norms_if_dirty(self):
         if self.dirty:
             logging.info("Saving cosine user norms...")
-            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_cosine_user_norms.pickle", "wb") as f:
+            with open(self.user_norms_file, "wb") as f:
                 pickle.dump(self.norms, f)
                 self.dirty = False
     

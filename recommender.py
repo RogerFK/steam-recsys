@@ -22,31 +22,41 @@ from utils import ChainedAssignment
 def trivial_hash(x):
     return x
 
+BIN_DATA_PATH = "bin_data"
+
 class AbstractRecommenderData(ABC):
     def __init__(self, csv_filename: Union[str, DataFrame], pickle_filename: str = None):
         self.processed_data = None
         self.data: pd.DataFrame = pd.DataFrame()
+        self.minhashes = {}
+
+        # check if there's global minhashes for the current dataframe / csv_filename
+        self.global_minhash_filename = f"{BIN_DATA_PATH}/{csv_filename}_minhashes.pickle" if not isinstance(csv_filename, DataFrame) else f"{BIN_DATA_PATH}/{self.__class__.__name__}_minhashes.pickle"
+        if os.path.exists(self.global_minhash_filename):
+            with open(self.global_minhash_filename, "rb") as f:
+                self.minhashes = pickle.load(f)
+
         try:
             if pickle_filename is None:
                 raise FileNotFoundError
-            with open(f"bin_data/{pickle_filename}.pickle", "rb") as f:
+            with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "rb") as f:
                 logging.info(f"Loading pickled data for {self.__class__.__name__}...")
                 self.processed_data = pickle.load(f)
                 logging.info(f"Loaded pickled data from {f.name}")
                 return
         except FileNotFoundError:
-            try:
-                if csv_filename is None:
-                    raise FileNotFoundError
-                if isinstance(csv_filename, DataFrame):
-                    logging.info(f"Loading {self.__class__.__name__} data from DataFrame...")
-                    self.data = csv_filename
-                else:
-                    logging.info(f"Loading {self.__class__.__name__} data from {csv_filename}...")
-                    self.data = pd.read_csv(csv_filename)
-            except FileNotFoundError:
-                logging.error("File not found, please check the path and try again")
-                raise
+            pass
+        try:
+            if csv_filename is None:
+                raise FileNotFoundError
+            if isinstance(csv_filename, DataFrame):
+                logging.info(f"Loading {self.__class__.__name__} data from DataFrame...")
+                self.data = csv_filename
+            else:
+                logging.info(f"Loading {self.__class__.__name__} data from {csv_filename}...")
+                self.data = pd.read_csv(csv_filename)
+        except FileNotFoundError:
+            pass
     
     def __getitem__(self, key):
         return self.data[key]
@@ -109,54 +119,69 @@ class AbstractRecommenderData(ABC):
         self.lshensemble.index(lsh_ensemble_index)
 
 class PlayerGamesPlaytime(AbstractRecommenderData):
-    pickle_name_fmt = "PGPTData/{}_thres{}_perm{}part{}"
+    pickle_name_fmt = "PGPTData/thres{}_perm{}part{}"
     def __init__(self, filename: str, playtime_normalizer: AbstractPlaytimeNormalizer, threshold=0.8, num_perm=128, num_part=32):
-        if not os.path.exists("bin_data/PGPTData"):
-            os.makedirs("bin_data/PGPTData")
-        self.pickle_name = self.pickle_name_fmt.format(repr(playtime_normalizer), threshold, num_perm, num_part)
+        if not os.path.exists(f"{BIN_DATA_PATH}/PGPTData"):
+            os.makedirs(f"{BIN_DATA_PATH}/PGPTData")
+        self.pickle_name = self.pickle_name_fmt.format(f"{threshold:.2f}", num_perm, num_part)
         super().__init__(filename, self.pickle_name)  # load the processed data if it exists
         self.playtime_normalizer = playtime_normalizer
         self.minhash_num_perm = num_perm
         self.dirty = self.processed_data is None
         if not self.dirty:
             self.lshensemble = self.processed_data["lshensemble"]
-            self.data = self.processed_data["data"]
-            self.minhashes = self.processed_data["minhashes"]
+        self.norm_file = f"{playtime_normalizer}_{(filename if not isinstance(filename, pd.DataFrame) else 'global')}"
+        self.norm_path = f"{BIN_DATA_PATH}/PGPTData/{self.norm_file}.pickle"
+        if os.path.exists(self.norm_path):
+            logging.info("Loading normalized data...")
+            with open(self.norm_path, "rb") as f:
+                self.data = pickle.load(f)
+        else:
+            self.validate_data(self.data)
+            logging.info("Processing player games...")
+            logging.info("Normalizing data...")
+            self.data = self.playtime_normalizer.normalize(self.data)
+            logging.info("Data normalized.")
+            with open(self.norm_path, "wb") as f:
+                pickle.dump(self.data, f)
+        if not self.dirty and len(self.minhashes) > 0:
             return
-        self.validate_data(self.data)
-        logging.info("Processing player games...")
-        logging.info("Normalizing data...")
-        self.data = self.playtime_normalizer.normalize(self.data)
-        logging.info("Data normalized.")
+
         # compute the MinHashLSHEnsemble index
         # http://ekzhu.com/datasketch/lshensemble.html#minhash-lsh-ensemble
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
-        self.minhashes = {}
-        logging.info("Computing MinHashes for each user...")
-        for steamid, row in self.data.groupby("steamid"):
-            # we only want to store the appids, we'll get the playtimes later
-            user_games = row["appid"].values
-            min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
-            min_hash.update_batch(user_games)
-            user_games_length = len(user_games)
-            lsh_ensemble_index.append((steamid, min_hash, user_games_length))
-            self.minhashes[steamid] = (min_hash, user_games_length)
-        logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
+        if len(self.minhashes) != 0:
+            logging.info("Using global minhashes...")
+            for steamid, (min_hash, length) in self.minhashes.items():
+                lsh_ensemble_index.append((steamid, min_hash, length))
+        else:
+            logging.info("Computing MinHashes for each user...")
+            for steamid, row in self.data.groupby("steamid"):
+                # we only want to store the appids, we'll get the playtimes later
+                user_games = row["appid"].values
+                min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
+                min_hash.update_batch(user_games)
+                user_games_length = len(user_games)
+                lsh_ensemble_index.append((steamid, min_hash, user_games_length))
+                self.minhashes[steamid] = (min_hash, user_games_length)
+            logging.info("MinHashes computed.")
+            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
+                with open(self.global_minhash_filename, "wb") as f:
+                    pickle.dump(self.minhashes, f)
+        logging.info("Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
         self.processed_data = {
             "lshensemble": self.lshensemble,
-            "data": self.data,
-            "minhashes": self.minhashes,
         }
         self.dump_data()
         atexit.register(self.dump_data)
     
     def dump_data(self):
         if self.dirty:
-            logging.info(f"Dumping data to bin_data/{self.pickle_name}.pickle")
-            with open(f"bin_data/{self.pickle_name}.pickle", "wb") as f:
+            logging.info(f"Dumping data to {BIN_DATA_PATH}/{self.pickle_name}.pickle")
+            with open(f"{BIN_DATA_PATH}/{self.pickle_name}.pickle", "wb") as f:
                 pickle.dump(self.processed_data, f)
             self.dirty = False
 
@@ -234,7 +259,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             yield steamid, user_games
     
     def add_user_games(self, steamid: int, user_games: DataFrame) -> None:
-        """Adds a user's games to the data
+        """Adds a user's games to the data. UNTESTED
 
         Args:
         ---
@@ -245,7 +270,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             user_games = user_games.copy()
         user_games = self.playtime_normalizer.normalize(user_games)
         user_games["steamid"] = steamid
-        self.data = self.data.append(user_games, ignore_index=True)
+        self.data.append(user_games, ignore_index=True)
         self.data.reset_index(drop=True, inplace=True)
         self.processed_data = None
         self.dirty = True
@@ -266,38 +291,68 @@ class GameTags(AbstractRecommenderData):
         ---
         filename (str): The filename of the game tags data. Defaults to "game_tags.csv".
         """
-        super().__init__(csv_filename, pickle_filename="game_tags")
+        super().__init__(csv_filename, pickle_filename="game_tags")  # game tag data is global except for the LSH index
         self.minhash_num_perm = num_perm
+        self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags_ensembles/game_tags_lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
+        if not os.path.exists(f"{BIN_DATA_PATH}/game_tags_ensembles/"):
+            os.makedirs(f"{BIN_DATA_PATH}/game_tags_ensembles/")
         if self.processed_data is not None:
-            self.lshensemble = self.processed_data["lshensemble"]
             self.data = self.processed_data["data"]
-            self.minhashes = self.processed_data["minhashes"]
             self.relevant_by_tag = self.processed_data["relevant_by_tag"]
             self.idf = self.processed_data["idf"]
+        if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
+            with open(self.lsh_ensemble_file, "rb") as f:
+                self.lshensemble = pickle.load(f)
+        if ensemble_loaded and self.processed_data is not None:
             return
+
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
-        self.minhashes = {}
         self.relevant_by_tag = {}  # tagid -> appids above weight threshold
         self.idf = {}  # tagid -> inverse document frequency
         logging.info("Computing MinHashes for each game...")
-        for appid, row in self.data.groupby("appid"):
-            # we only want to store the appids, we'll get the weights later
-            game_tags = row["tagid"].values
-            min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
-            min_hash.update_batch(game_tags)
-            game_tags_length = len(game_tags)
-            lsh_ensemble_index.append((appid, min_hash, game_tags_length))
-            self.minhashes[appid] = (min_hash, game_tags_length)
-            for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
-                if tagid not in self.relevant_by_tag:
-                    self.relevant_by_tag[tagid] = set()
-                self.relevant_by_tag[tagid].add(appid)
-            for tagid in game_tags:
-                if tagid not in self.idf:
-                    self.idf[tagid] = 0
-                self.idf[tagid] += 1
+        
+        if len(self.minhashes) != 0:
+            logging.info("Using global minhashes...")
+            for appid, row in self.data.groupby("appid"):
+                # we only want to store the appids, we'll get the weights later
+                game_tags = row["tagid"].values
+                min_hash = self.minhashes[appid][0]
+                game_tags_length = len(game_tags)
+                lsh_ensemble_index.append((appid, min_hash, game_tags_length))
+                self.minhashes[appid] = (min_hash, game_tags_length)
+                for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
+                    if tagid not in self.relevant_by_tag:
+                        self.relevant_by_tag[tagid] = set()
+                    self.relevant_by_tag[tagid].add(appid)
+                    if tagid not in self.idf:
+                        self.idf[tagid] = 0
+                    self.idf[tagid] += 1
+        else:
+            logging.info("Computing MinHashes for each game...")
+            for appid, row in self.data.groupby("appid"):
+                # we only want to store the appids, we'll get the weights later
+                game_tags = row["tagid"].values
+                min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
+                min_hash.update_batch(game_tags)
+                game_tags_length = len(game_tags)
+                lsh_ensemble_index.append((appid, min_hash, game_tags_length))
+                self.minhashes[appid] = (min_hash, game_tags_length)
+                for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
+                    if tagid not in self.relevant_by_tag:
+                        self.relevant_by_tag[tagid] = set()
+                    self.relevant_by_tag[tagid].add(appid)
+                for tagid in game_tags:
+                    if tagid not in self.idf:
+                        self.idf[tagid] = 0
+                    self.idf[tagid] += 1
+                    
+            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
+                with open(self.global_minhash_filename, "wb") as f:
+                    logging.info("Dumping global minhashes...")
+                    pickle.dump(self.minhashes, f)
+                    logging.info(f"Dumped global minhashes to {f.name}")
         
         total_games = self.data["appid"].nunique()
         for tagid in self.idf:
@@ -312,7 +367,7 @@ class GameTags(AbstractRecommenderData):
             "relevant_by_tag": self.relevant_by_tag,
             "idf": self.idf
         }
-        with open(f"bin_data/game_tags.pickle", "wb") as f:
+        with open(f"{BIN_DATA_PATH}/game_tags.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
@@ -460,34 +515,42 @@ class GameTags(AbstractRecommenderData):
 # this class below is the same as GameTagsData but uses game_genres.csv instead
 class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limited, so this is not very useful. Hence, we won't waste much time on it.
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
-        super().__init__(csv_filename, "game_genres")
+        self.pickle_filename = f"game_genres_thres{threshold}_perm{num_perm}_part{num_part}"
+        super().__init__(csv_filename, self.pickle_filename)
         self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
-            self.data = self.processed_data["data"]
-            self.minhashes = self.processed_data["minhashes"]
-            return
+            if self.data is not None and len(self.minhashes) > 0:
+                return
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
         self.minhashes = {}
-        logging.info("Computing MinHashes for each game...")
-        for appid, row in self.data.groupby("appid"):
-            game_genres = row["genreid"].values
-            min_hash = MinHash(num_perm=128, hashfunc=trivial_hash)
-            min_hash.update_batch(game_genres)
-            game_genres_length = len(game_genres)
-            lsh_ensemble_index.append((appid, min_hash, game_genres_length))
-            self.minhashes[appid] = (min_hash, game_genres_length)
+        if len(self.minhashes) > 0:
+            logging.info("MinHashes already computed. Computing MinHashLSHEnsemble index...")
+            lsh_ensemble_index = [(appid, min_hash, game_genres_length) for appid, (min_hash, game_genres_length) in self.minhashes.items()]
+        else: 
+            logging.info("Computing MinHashes for each game...")
+            for appid, row in self.data.groupby("appid"):
+                game_genres = row["genreid"].values
+                min_hash = MinHash(num_perm=128, hashfunc=trivial_hash)
+                min_hash.update_batch(game_genres)
+                game_genres_length = len(game_genres)
+                lsh_ensemble_index.append((appid, min_hash, game_genres_length))
+                self.minhashes[appid] = (min_hash, game_genres_length)
+            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
+                with open(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle", "wb") as f:
+                    logging.info("Dumping global minhashes...")
+                    pickle.dump(self.minhashes, f)
+                    logging.info(f"Dumped global minhashes to {f.name}")
+
         logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
         self.processed_data = {
             "lshensemble": self.lshensemble,
-            "data": self.data,
-            "minhashes": self.minhashes,
         }
-        with open(f"bin_data/game_genres.pickle", "wb") as f:
+        with open(f"{BIN_DATA_PATH}/{self.pickle_filename}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
@@ -556,34 +619,45 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
 # Thus, we won't waste much time on this either.
 class GameCategories(AbstractRecommenderData):
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
-        super().__init__(csv_filename, "game_categories")
+        self.pickle_filename = f"game_categories_thres{threshold}_perm{num_perm}_part{num_part}"
+        super().__init__(csv_filename, self.pickle_filename)
         self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
-            self.data = self.processed_data["data"]
-            self.minhashes = self.processed_data["minhashes"]
-            return
+            if self.data is not None and len(self.minhashes) > 0:
+                return
+        
         self.validate_data(self.data)
         self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
         self.minhashes = {}
-        logging.info("Computing MinHashes for each game...")
-        for appid, row in self.data.groupby("appid"):
-            game_categories = row["categoryid"].values
-            min_hash = MinHash(num_perm=128, hashfunc=trivial_hash)
-            min_hash.update_batch(game_categories)
-            game_categories_length = len(game_categories)
-            lsh_ensemble_index.append((appid, min_hash, game_categories_length))
-            self.minhashes[appid] = (min_hash, game_categories_length)
-        logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
+        if len(self.minhashes) != 0:
+            logging.info("MinHashes already computed. Computing MinHashLSHEnsemble index...")
+            lsh_ensemble_index = [(appid, min_hash, size) for appid, (min_hash, size) in self.minhashes.items()]
+        else:
+            logging.info("Computing MinHashes for each game...")
+            for appid, row in self.data.groupby("appid"):
+                game_categories = row["categoryid"].values
+                min_hash = MinHash(num_perm=128, hashfunc=trivial_hash)
+                min_hash.update_batch(game_categories)
+                game_categories_length = len(game_categories)
+                lsh_ensemble_index.append((appid, min_hash, game_categories_length))
+                self.minhashes[appid] = (min_hash, game_categories_length)
+            logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
+            if not os.path.exists(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle"):
+                with open(f"{BIN_DATA_PATH}/{self.global_minhash_filename}.pickle", "wb") as f:
+                    logging.info("Dumping global MinHash...")
+                    pickle.dump(self.minhashes, f)
+                    logging.info(f"Dumped global MinHash to {f.name}")
+
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
         self.processed_data = {
             "lshensemble": self.lshensemble,
             "data": self.data,
-            "minhashes": self.minhashes,
         }
-        with open(f"bin_data/game_categories.pickle", "wb") as f:
+        
+        with open(f"{BIN_DATA_PATH}/{self.pickle_filename}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
@@ -653,7 +727,7 @@ class GameDevelopers(AbstractRecommenderData):
             self.data = self.processed_data
             return
         self.processed_data = self.data
-        with open(f"bin_data/{pickle_filename}.pickle", "wb") as f:
+        with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
@@ -739,7 +813,7 @@ class GamePublishers(AbstractRecommenderData):
             self.data = self.processed_data
             return
         self.processed_data = self.data
-        with open(f"bin_data/{pickle_filename}.pickle", "wb") as f:
+        with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "wb") as f:
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
@@ -845,6 +919,7 @@ class GameDetails(AbstractRecommenderData):
         super().__init__(csv_filename)
         logging.info("Processing game details and setting index on appid...")
         self.data = self.data.set_index("appid")
+        self.validate_data(self.data)
         logging.info("Finished processing game details")
         self.rating_multiplier = rating_multiplier
 
@@ -1277,7 +1352,7 @@ class CosineUserSimilarity(RawUserSimilarity):
         self.precomputed = precompute
         self.dirty = True
         if precompute:
-            # Check if there's pickled data in bin_data\cosine_user_norms.pickle
+            # Check if there's pickled data in BIN_DATA_PATH\{self.pgdata.norm_file}_cosine_user_norms.pickle
             self.load_norms()
             if self.dirty:
                 # Precompute the norms of the users
@@ -1291,15 +1366,15 @@ class CosineUserSimilarity(RawUserSimilarity):
         atexit.register(self.save_norms_if_dirty)
     
     def load_norms(self):
-        if os.path.exists("bin_data/cosine_user_norms.pickle"):
-            with open("bin_data/cosine_user_norms.pickle", "rb") as f:
+        if os.path.exists(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_cosine_user_norms.pickle"):
+            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_cosine_user_norms.pickle", "rb") as f:
                 self.norms = pickle.load(f)
                 self.dirty = False
     
     def save_norms_if_dirty(self):
         if self.dirty:
             logging.info("Saving cosine user norms...")
-            with open("bin_data/cosine_user_norms.pickle", "wb") as f:
+            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_cosine_user_norms.pickle", "wb") as f:
                 pickle.dump(self.norms, f)
                 self.dirty = False
     
@@ -1367,10 +1442,10 @@ class CosineUserSimilarity(RawUserSimilarity):
 class PearsonUserSimilarity(RawUserSimilarity):
     def __init__(self, pgdata: PlayerGamesPlaytime, parallel=True) -> None:
         super().__init__(pgdata, parallel)
-        # Check if there's pickled data in bin_data\pearsonusersimilarity.pickle
+        # Check if there's pickled data in BIN_DATA_PATH\pearsonusersimilarity.pickle
         self.dirty = False
-        if os.path.exists("bin_data/pearsonusersimilarity.pickle"):
-            with open("bin_data/pearsonusersimilarity.pickle", "rb") as f:
+        if os.path.exists(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle"):
+            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle", "rb") as f:
                 self.processed_data = pickle.load(f)
             self.user_mean = self.processed_data["user_mean"]
             self.denominator = self.processed_data["denominator"]
@@ -1386,13 +1461,13 @@ class PearsonUserSimilarity(RawUserSimilarity):
                 "user_mean": self.user_mean,
                 "denominator": self.denominator
             }
-            with open("bin_data/pearsonusersimilarity.pickle", "wb") as f:
+            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle", "wb") as f:
                 pickle.dump(self.processed_data, f)
         atexit.register(self.save_processed_data_if_dirty)
     
     def save_processed_data_if_dirty(self):
         if self.dirty:
-            with open("bin_data/pearsonusersimilarity.pickle", "wb") as f:
+            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle", "wb") as f:
                 pickle.dump(self.processed_data, f)
 
     def get_user_mean_denominator(self, steamid: int) -> Tuple[float, float]:
@@ -2312,6 +2387,14 @@ class AbstractRecommenderSystem(ABC):
             raise TypeError("appid must be an int")
         if appid < 0:
             raise ValueError("appid must be non-negative")
+    
+    def save_scores(self, filename: str):
+        with open(filename, "wb") as f:
+            pickle.dump(self.score_results, f)
+
+    def load_scores(self, filename: str):
+        with open(filename, "rb") as f:
+            self.score_results = pickle.load(f)
 
 class RandomRecommenderSystem(AbstractRecommenderSystem):
     def __init__(self, csv_filename: str = "data/appids.csv"):

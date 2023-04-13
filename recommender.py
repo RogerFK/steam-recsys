@@ -23,8 +23,10 @@ def trivial_hash(x):
     return x
 
 BIN_DATA_PATH = "bin_data"
+GLOBAL_CACHE = {}  # used mainly to not run out of RAM in experiments.py
 
 class AbstractRecommenderData(ABC):
+    
     def __init__(self, csv_filename: Union[str, DataFrame], pickle_filename: str = None):
         self.processed_data = None
         self.data: pd.DataFrame = pd.DataFrame()
@@ -36,16 +38,30 @@ class AbstractRecommenderData(ABC):
             os.makedirs(f"{BIN_DATA_PATH}/minhashes")
         self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle"
         if os.path.exists(self.global_minhash_filename):
-            with open(self.global_minhash_filename, "rb") as f:
-                self.minhashes = pickle.load(f)
+            # first check if it's in the global cache
+            if self.global_minhash_filename in GLOBAL_CACHE:
+                logging.info(f"Loading minhashes for {self.__class__.__name__} from GLOBAL CACHE...")
+                self.minhashes = GLOBAL_CACHE[self.global_minhash_filename]
+            else:
+                logging.info(f"Loading minhashes for {self.__class__.__name__} from {self.global_minhash_filename}...")
+                with open(self.global_minhash_filename, "rb") as f:
+                    self.minhashes = pickle.load(f)
+                GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
 
         try:
             if pickle_filename is None:
                 raise FileNotFoundError
-            with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "rb") as f:
-                logging.info(f"Loading pickled data for {self.__class__.__name__}...")
-                self.processed_data = pickle.load(f)
-                logging.info(f"Loaded pickled data from {f.name}")
+            # first check if it's in the global cache
+            if pickle_filename in GLOBAL_CACHE:
+                logging.info(f"Loading pickled data for {self.__class__.__name__} from GLOBAL CACHE...")
+                self.processed_data = GLOBAL_CACHE[pickle_filename]
+                logging.info(f"Loaded pickled data from GLOBAL CACHE")
+            else:
+                with open(f"{BIN_DATA_PATH}/{pickle_filename}.pickle", "rb") as f:
+                    logging.info(f"Loading pickled data for {self.__class__.__name__}...")
+                    self.processed_data = pickle.load(f)
+                    logging.info(f"Loaded pickled data from {f.name}")
+                    GLOBAL_CACHE[pickle_filename] = self.processed_data
         except FileNotFoundError:
             pass
         try:
@@ -57,8 +73,14 @@ class AbstractRecommenderData(ABC):
                 logging.info(f"Loaded {self.__class__.__name__} data from DataFrame")
             else:
                 logging.info(f"Loading {self.__class__.__name__} data from {csv_filename}...")
-                self.data = pd.read_csv(csv_filename)
-                logging.info(f"Loaded {self.__class__.__name__} data from {csv_filename}")
+                if csv_filename in GLOBAL_CACHE:
+                    self.data = GLOBAL_CACHE[csv_filename]
+                    logging.info(f"Loaded {self.__class__.__name__} data from {csv_filename} (GLOBAL CACHE)")
+                else:
+                    self.data = pd.read_csv(csv_filename)
+                    GLOBAL_CACHE[csv_filename] = self.data
+                    logging.info(f"Loaded {self.__class__.__name__} data from {csv_filename}")
+                
         except FileNotFoundError:
             pass
     
@@ -102,6 +124,22 @@ class AbstractRecommenderData(ABC):
         results = self.lshensemble.query(user_minhash, length)
         return results
     
+    def get_all_games(self):
+        """
+        Description:
+        ---
+        Gets all games in the dataset.
+
+        Args:
+        ---
+        None
+
+        Returns:
+        ---
+        * List[int]: A list of appids
+        """
+        return self.data.index.tolist()
+    
     def set_new_lshensemble_threshold(self, threshold):
         """
         Description:
@@ -121,6 +159,22 @@ class AbstractRecommenderData(ABC):
         for steamid, (min_hash, length) in self.minhashes.items():
             lsh_ensemble_index.append((steamid, min_hash, length))
         self.lshensemble.index(lsh_ensemble_index)
+    
+    def get_appids_with_itemid(self, tagid):
+        """
+        Description:
+        ---
+        Gets all appids that have a certain tagid.
+
+        Args:
+        ---
+        * tagid (int): The tagid
+
+        Returns:
+        ---
+        * List[int]: A list of appids
+        """
+        return self.data[self.data[tagid] == 1].index.tolist()
 
 class PlayerGamesPlaytime(AbstractRecommenderData):
     pickle_name_fmt = "PGPTData/thres{}_perm{}part{}"
@@ -140,8 +194,14 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         atexit.register(self.dump_data)
         if os.path.exists(self.norm_path):
             logging.info("Loading normalized data...")
-            with open(self.norm_path, "rb") as f:
-                self.data = pickle.load(f)
+            if self.norm_file in GLOBAL_CACHE:
+                self.data = GLOBAL_CACHE[self.norm_file]
+                logging.info("Loaded normalized data from GLOBAL CACHE")
+            else:
+                with open(self.norm_path, "rb") as f:
+                    self.data = pickle.load(f)
+                    GLOBAL_CACHE[self.norm_file] = self.data
+                    logging.info("Loaded normalized data from file")
         else:
             self.validate_data(self.data)
             logging.info("Processing player games...")
@@ -150,6 +210,8 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             logging.info("Data normalized.")
             with open(self.norm_path, "wb") as f:
                 pickle.dump(self.data, f)
+                logging.info("Normalized data dumped to file")
+            GLOBAL_CACHE[self.norm_file] = self.data
         if not self.dirty and len(self.minhashes) > 0:
             return
 
@@ -175,6 +237,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             if not os.path.exists(self.global_minhash_filename):
                 with open(self.global_minhash_filename, "wb") as f:
                     pickle.dump(self.minhashes, f)
+            GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
         logging.info("Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
@@ -189,6 +252,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             logging.info(f"Dumping data to {BIN_DATA_PATH}/{self.pickle_name}.pickle")
             with open(f"{BIN_DATA_PATH}/{self.pickle_name}.pickle", "wb") as f:
                 pickle.dump(self.processed_data, f)
+            GLOBAL_CACHE[self.pickle_name] = self.processed_data
             self.dirty = False
 
     def validate_data(self, data: DataFrame):
@@ -310,20 +374,35 @@ class GameTags(AbstractRecommenderData):
         self.idf_weight = idf_weight
         self.relevant_by_tag_file = f"{BIN_DATA_PATH}/game_tags/relevant{weight_threshold:.2f}.pickle"
         if idf_loaded := os.path.exists(self.idf_file):
-            with open(self.idf_file, "rb") as f:
-                logging.info("Loading IDFs from global file...")
-                self.idf = pickle.load(f)
-                logging.info("Loaded IDFs from file.")
+            if self.idf_file in GLOBAL_CACHE:
+                self.idf = GLOBAL_CACHE[self.idf_file]
+                logging.info("Loaded IDFs from GLOBAL CACHE.")
+            else:
+                with open(self.idf_file, "rb") as f:
+                    logging.info("Loading IDFs from global file...")
+                    self.idf = pickle.load(f)
+                    logging.info("Loaded IDFs from file.")
+                GLOBAL_CACHE[self.idf_file] = self.idf
         if rele_loaded := os.path.exists(self.relevant_by_tag_file):
-            with open(self.relevant_by_tag_file, "rb") as f:
-                logging.info(f"Loading relevant tags from {f.name}...")
-                self.relevant_by_tag = pickle.load(f)
-                logging.info("Loaded relevant tags from file.")
+            if self.relevant_by_tag_file in GLOBAL_CACHE:
+                self.relevant_by_tag = GLOBAL_CACHE[self.relevant_by_tag_file]
+                logging.info("Loaded relevant tags from GLOBAL CACHE.")
+            else:
+                with open(self.relevant_by_tag_file, "rb") as f:
+                    logging.info(f"Loading relevant tags from {f.name}...")
+                    self.relevant_by_tag = pickle.load(f)
+                    logging.info("Loaded relevant tags from file.")
+                GLOBAL_CACHE[self.relevant_by_tag_file] = self.relevant_by_tag
         if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
-            with open(self.lsh_ensemble_file, "rb") as f:
-                logging.info(f"Loading LSH Ensemble from {f.name}...")
-                self.lshensemble = pickle.load(f)
-                logging.info("Loaded LSH Ensemble from file.")
+            if self.lsh_ensemble_file in GLOBAL_CACHE:
+                self.lshensemble = GLOBAL_CACHE[self.lsh_ensemble_file]
+                logging.info("Loaded LSH Ensemble from GLOBAL CACHE.")
+            else:
+                with open(self.lsh_ensemble_file, "rb") as f:
+                    logging.info(f"Loading LSH Ensemble from {f.name}...")
+                    self.lshensemble = pickle.load(f)
+                    logging.info("Loaded LSH Ensemble from file.")
+                GLOBAL_CACHE[self.lsh_ensemble_file] = self.lshensemble
         if ensemble_loaded and rele_loaded and idf_loaded:
             logging.info("Done. Using previous LSH Ensemble, IDFs, and relevant tags.")
             return
@@ -379,6 +458,7 @@ class GameTags(AbstractRecommenderData):
                     logging.info("Dumping global minhashes...")
                     pickle.dump(self.minhashes, f)
                     logging.info(f"Dumped global minhashes to {f.name}")
+                GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
         
         total_games = self.data["appid"].nunique()
         for tagid in self.idf:
@@ -391,16 +471,19 @@ class GameTags(AbstractRecommenderData):
                 logging.info("Dumping MinHashLSHEnsemble...")
                 pickle.dump(self.lshensemble, f)
                 logging.info(f"Dumped MinHashLSHEnsemble to {f.name}")
+            GLOBAL_CACHE[self.lsh_ensemble_file] = self.lshensemble
         if not rele_loaded:
             with open(self.relevant_by_tag_file, "wb") as f:
                 logging.info("Dumping relevant_by_tag...")
                 pickle.dump(self.relevant_by_tag, f)
                 logging.info(f"Dumped relevant_by_tag to {f.name}")
+            GLOBAL_CACHE[self.relevant_by_tag_file] = self.relevant_by_tag
         if not idf_loaded:
             with open(self.idf_file, "wb") as f:
                 logging.info("Dumping idf...")
                 pickle.dump(self.idf, f)
                 logging.info(f"Dumped idf to {f.name}")
+            GLOBAL_CACHE[self.idf_file] = self.idf
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -485,7 +568,7 @@ class GameTags(AbstractRecommenderData):
         game_tags.reset_index(drop=True, inplace=True)
         # apply the inverse document frequency
         with ChainedAssignment():
-            weights = game_tags.apply(lambda x: (x["weight"] * self.idf.get(int(x["tagid"]) * self.idf_weight + max(1 - self.idf_weight, 0) * (x["weight"])), NotImplementedError), axis=1)
+            weights = game_tags.apply(lambda x: (x["weight"] * self.idf[x["tagid"]] * self.idf_weight + max(1 - self.idf_weight, 0) * (x["weight"])), axis=1)
             game_tags["weight"] = weights
         return game_tags.set_index("tagid")["weight"].to_dict()
     
@@ -541,6 +624,8 @@ class GameTags(AbstractRecommenderData):
         # TODO
         return tagid
         # return self.tag_names[tagid]
+
+    get_appids_with_itemid = get_relevant_games
     
     def __repr__(self):
         return self.repr_name
@@ -577,6 +662,7 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
                     logging.info("Dumping global minhashes...")
                     pickle.dump(self.minhashes, f)
                     logging.info(f"Dumped global minhashes to {f.name}")
+                GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
 
         logging.info("MinHashes computed. Computing MinHashLSHEnsemble index...")
         self.lshensemble.index(lsh_ensemble_index)
@@ -588,6 +674,7 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
             logging.info("Dumping LSH Ensemble and data...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble and data to {f.name}")
+        GLOBAL_CACHE[self.pickle_filename] = self.processed_data
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -687,6 +774,7 @@ class GameCategories(AbstractRecommenderData):
                     logging.info("Dumping global MinHash...")
                     pickle.dump(self.minhashes, f)
                     logging.info(f"Dumped global MinHash to {f.name}")
+                GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
 
         self.lshensemble.index(lsh_ensemble_index)
         logging.info("MinHashLSHEnsemble index computed.")
@@ -698,6 +786,7 @@ class GameCategories(AbstractRecommenderData):
             logging.info("Dumping LSH Ensemble...")
             pickle.dump(self.processed_data, f)
             logging.info(f"Dumped LSH Ensemble to {f.name}")
+        GLOBAL_CACHE[self.pickle_filename] = self.processed_data
     
     def validate_data(self, data: DataFrame):
         if not isinstance(data, DataFrame):
@@ -1031,7 +1120,7 @@ class GameDetails(AbstractRecommenderData):
         """
         return [self.GameBase(appid, self.data.loc[appid], self.rating_multiplier) for appid in appids]
     
-    def get_all_games(self) -> List[GameBase]:
+    def get_all_games(self) -> Generator[GameBase, None, None]:
         """
         Description:
         ---
@@ -1039,9 +1128,11 @@ class GameDetails(AbstractRecommenderData):
 
         Returns:
         ---
-        * List[Game]: The list of Game objects for all games
+        * Generator[Game]: Game objects for all games
         """
-        return [self.GameBase(appid, row, self.rating_multiplier) for appid, row in self.data.iterrows()]
+        # return [self.GameBase(appid, row, self.rating_multiplier) for appid, row in self.data.iterrows()]
+        for appid, row in self.data.iterrows():
+            yield self.GameBase(appid, row, self.rating_multiplier)
     
     def __repr__(self):
         return f"GameDetails(rating_multiplier={self.rating_multiplier})"
@@ -1163,6 +1254,10 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         self.user_item_weights = {}
         self.recommender_data = recommender_data
         self.item_weight_max_length = 0  # used to cull
+        try:
+            self.skip_querying = self.recommender_data.lshensemble.threshold > 1
+        except AttributeError:
+            self.skip_querying = False
 
     @abstractmethod
     def similarity(self, appid: int, other: int) -> float:
@@ -1214,12 +1309,16 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         ---
         Tuple[List[int], Dict[int, float]]: A tuple containing a list of the appids of the games and a dictionary containing the weights of the tags
         """
+        if self.recommender_data.lshensemble.threshold >= 1:
+            return [], self.get_item_weights(steamid, user_games)
         user_minhash = MinHash(self.recommender_data.minhash_num_perm, hashfunc=trivial_hash)
         user_weights = self.get_item_weights(steamid, user_games)
-        
+        if len(user_weights.keys()) < 1:
+            logging.error(f"No user weights for user {str(steamid)} in {self.__class__.__name__}")
+            return [], {}
         user_minhash.update_batch(user_weights.keys())
         similar_games = self.recommender_data.get_minhash_similar_games(user_minhash, len(user_weights.keys()))
-        return similar_games, user_weights
+        return list(similar_games), user_weights
 
     @abstractmethod
     def get_game_items(self, appid: int) -> List[Tuple[int, float]]:
@@ -1251,6 +1350,8 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         if steamid in self.user_item_weights: return self.user_item_weights[steamid]
         
         item_weight = {}
+        if len(user_games) < 1:
+            input(f"No user games for user {steamid} in {self.__class__.__name__}?")
         for _, row in user_games.iterrows():
             appid = row["appid"]
             pseudorating = row["playtime_forever"]
@@ -1338,6 +1439,8 @@ class RawUserSimilarity(AbstractSimilarity):
                                  dtype=object)
         # reorder the columns
         sim_users = sim_users[["steamid", "similarity"]]
+        # normalize the similarities
+        sim_users["similarity"] = sim_users["similarity"] / sim_users["similarity"].max() * sim_users["similarity"].min()
         return sim_users
     def get_similar_users(self, steamid: int, n: int = 10) -> DataFrame:
         """Gets n top similar users to a user. Specially useful for collaborative filtering.
@@ -1417,10 +1520,16 @@ class CosineUserSimilarity(RawUserSimilarity):
         atexit.register(self.save_norms_if_dirty)
     
     def load_norms(self):
-        if os.path.exists(self.user_norms_file):
+        if self.user_norms_file in GLOBAL_CACHE:
+            self.norms = GLOBAL_CACHE[self.user_norms_file]
+            self.dirty = False
+            logging.info("Loaded cosine user norms from GLOBAL CACHE.")
+        elif os.path.exists(self.user_norms_file):
             with open(self.user_norms_file, "rb") as f:
                 self.norms = pickle.load(f)
                 self.dirty = False
+                logging.info(f"Loaded cosine user norms from file {f.name}.")
+            GLOBAL_CACHE[self.user_norms_file] = self.norms
     
     def save_norms_if_dirty(self):
         if self.dirty:
@@ -1428,6 +1537,8 @@ class CosineUserSimilarity(RawUserSimilarity):
             with open(self.user_norms_file, "wb") as f:
                 pickle.dump(self.norms, f)
                 self.dirty = False
+            logging.info("Finished saving cosine user norms.")
+            GLOBAL_CACHE[self.user_norms_file] = self.norms
     
     def get_user_norm(self, steamid: int) -> float:
         if steamid not in self.norms:
@@ -1495,31 +1606,45 @@ class PearsonUserSimilarity(RawUserSimilarity):
         super().__init__(pgdata, parallel)
         # Check if there's pickled data in BIN_DATA_PATH\pearsonusersimilarity.pickle
         self.dirty = False
-        if os.path.exists(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle"):
-            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle", "rb") as f:
+        self.processed_data_name = self.pgdata.norm_file + "pearson"
+        self.processed_data_filename = f"{BIN_DATA_PATH}/pearson/{self.pgdata.norm_file}.pickle" 
+        if not os.path.exists(f"{BIN_DATA_PATH}/pearson"):
+            os.mkdir(f"{BIN_DATA_PATH}/pearson")
+        if self.processed_data_name in GLOBAL_CACHE:
+            self.processed_data = GLOBAL_CACHE[self.processed_data_name]
+            self.user_mean = self.processed_data["user_mean"]
+            self.denominator = self.processed_data["denominator"]
+            logging.info("Loaded Pearson user similarity from GLOBAL CACHE.")
+        elif os.path.exists(self.processed_data_filename):
+            with open(self.processed_data_filename, "rb") as f:
                 self.processed_data = pickle.load(f)
             self.user_mean = self.processed_data["user_mean"]
             self.denominator = self.processed_data["denominator"]
+            logging.info(f"Loaded Pearson user similarity from file {f.name}.")
         else:
             self.user_mean = {}
             self.denominator = {}
+            logging.info("Computing Pearson user similarity...")
             for steamid, user_games in self.pgdata.get_all_user_games():
                 user_mean = np.sum(user_games['playtime_forever'])
                 self.user_mean[steamid] = user_mean
                 # to get the denominator, we need to subtract the mean from each rating
                 self.denominator[steamid] = np.sum(user_games['playtime_forever'] - user_mean)
             self.processed_data = {
-                "user_mean": self.user_mean,
-                "denominator": self.denominator
+                "denominator": self.denominator,
+                "user_mean": self.user_mean
             }
-            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle", "wb") as f:
+            logging.info("Finished computing Pearson user similarity. Dumping to file and storing in GLOBAL CACHE.")
+            with open(self.processed_data_filename, "wb") as f:
                 pickle.dump(self.processed_data, f)
+            GLOBAL_CACHE[self.processed_data_name] = self.processed_data
         atexit.register(self.save_processed_data_if_dirty)
     
     def save_processed_data_if_dirty(self):
         if self.dirty:
-            with open(f"{BIN_DATA_PATH}/{self.pgdata.norm_file}_pearsonusersimilarity.pickle", "wb") as f:
+            with open(f"{BIN_DATA_PATH}/pearson/{self.pgdata.norm_file}.pickle", "wb") as f:
                 pickle.dump(self.processed_data, f)
+            GLOBAL_CACHE[self.processed_data_name] = self.processed_data
 
     def get_user_mean_denominator(self, steamid: int) -> Tuple[float, float]:
         if steamid in self.user_mean:
@@ -2176,7 +2301,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
                 own_release_date = datetime.strptime(details.release_date, "%b %d, %Y")
                 other_release_date = datetime.strptime(other_details.release_date, "%b %d, %Y")
                 similarity += max(1.0 - abs((own_release_date - other_release_date).days) / 365.0, 0) * self.weights["release_date"]
-            except:  # Some games don't have a release date, some others have "Coming Soon" or even emojis
+            except:  # Some games don't have a release date (\\N), some others have "Coming Soon" or even emojis
                 pass
         similarity += self.weights["coming_soon"] * details.coming_soon * other_details.coming_soon
 
@@ -2254,7 +2379,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         # compute the average release date
         # NOTE We should compute the average taking into account the playtime of each game
         reference_date = datetime.strptime("Jan 01, 1970", "%b %d, %Y")
-        perfect_game["release_date"] = datetime.strftime(sum([release_date - reference_date for release_date in all_release_dates], timedelta()) / len(all_release_dates) + reference_date, "%b %d, %Y")
+        perfect_game["release_date"] = datetime.strftime(sum([release_date - reference_date for release_date in all_release_dates], timedelta()) / len(all_release_dates) + reference_date, "%b %d, %Y") if len(all_release_dates) > 0 else "\\N"
         
         user_games = user_games.drop(columns=["appid", "name", "release_date", "steamid", "playtime_forever", "date_retrieved"])
         user_games = user_games.mean(numeric_only=False)
@@ -2529,7 +2654,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
                 appid = int(appid)
                 if not appid in games:
                     games[appid] = 0
-                games[appid] += pseudorating * (similarity ** 2)
+                games[appid] += pseudorating * (similarity ** 1.5)  # TODO: fix overflowing in * and +
         return games
 
     
@@ -2625,7 +2750,7 @@ class RatingBasedRecommenderSystem(AbstractRecommenderSystem):
     def __repr__(self) -> str:
         return f"RatingBasedRecommenderSystem"  #(game_details={self.game_details})"
 class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
-    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, perfect_match_weight = 0.2):
+    def __init__(self, pgdata: PlayerGamesPlaytime, game_similarity: AbstractGameSimilarity, perfect_match_weight = 0.2, fallback=True):
         """
         Description
         ---
@@ -2642,6 +2767,7 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         * TypeError: If game_similarity is not an instance of AbstractGameSimilarity, or if pgdata is not an instance of PlayerGamesPlaytime
         """
         super().__init__(pgdata)
+        self.fallback = fallback
         if not isinstance(pgdata, PlayerGamesPlaytime):
             raise TypeError(pgdata.__class__.__name__ + " is not an instance of " + PlayerGamesPlaytime.__name__)
         self.pgdata = pgdata        
@@ -2740,6 +2866,9 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
             user_map = self.game_similarity.get_item_weights(steamid, self.pgdata.get_user_games(steamid))
         else:
             user_map = self.score_results[steamid]
+        if len(user_map) == 0:
+            logging.error(f"User {steamid}'s item weights are 0 for {self}!")
+            return 0
         score = 0
         perfect_match = True
         for itemid, weight in self.game_similarity.get_game_items(appid):
@@ -2750,13 +2879,26 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
         return score + (perfect_match) * (score * self.perfect_match_weight) / sum(user_map.values())
 
     def generate_recommendations(self, steamid: int) -> Dict[int, float]:
-        similar_games, item_weights = self.game_similarity.get_similar_games_from_user_games(steamid, self.pgdata.get_user_games(steamid))
         games = {}
-        for appid in similar_games:
-            real_appid = _appid = appid
-            if isinstance(appid, tuple):  # some get_similar_games_from_user_games return tuples TODO fix this?
-                real_appid = appid[0]
-            games[real_appid] = self.score_generation(_appid, item_weights)
+        skip_querying = self.game_similarity.skip_querying
+        if not skip_querying:
+            similar_games, item_weights = self.game_similarity.get_similar_games_from_user_games(steamid, self.pgdata.get_user_games(steamid))
+        if skip_querying or (self.fallback and len(similar_games) == 0):
+            if isinstance(self.recommender_data, GameDetails):
+                # recommendations are generated by GameDetails and this should never happen
+                return {}
+            if not skip_querying:
+                logging.warning(f"Recommender {self} returned no games for user {steamid}. Falling back to get_appids_with_itemid (slightly slower)")
+            for itemid in item_weights.keys():
+                for appid in self.recommender_data.get_appids_with_itemid(itemid):
+                    games[appid] = self.score_generation(appid, item_weights)
+        else:
+            for appid in similar_games:
+                real_appid = _appid = appid
+                if isinstance(appid, tuple):  # some get_similar_games_from_user_games return tuples
+                    real_appid = appid[0]
+                games[real_appid] = self.score_generation(_appid, item_weights)
+        
         return games
     
     def score_generation(self, appid: int, item_weights: dict):

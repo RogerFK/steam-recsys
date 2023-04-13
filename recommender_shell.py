@@ -19,8 +19,8 @@ game_info = GameInfo(game_details, game_categories, game_developers, game_publis
 
 # recommender systems and similarity objects
 rand = RandomRecommenderSystem()
-pgdata = PlayerGamesPlaytime('data/player_games_subset.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
-pgdata_lowthres = PlayerGamesPlaytime('data/player_games_subset.csv', LogPlaytimeNormalizer('sum_max', inplace=True), threshold=0.2)
+pgdata = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
+pgdata_lowthres = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), threshold=0.2)
 # pgdata_train = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
 user_sim = CosineUserSimilarity(pgdata, parallel=False)
 user_sim_lowthres = CosineUserSimilarity(pgdata_lowthres, parallel=True)

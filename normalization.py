@@ -108,17 +108,18 @@ class LogPlaytimeNormalizer(AbstractPlaytimeNormalizer):
 class RootPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     """Normalizes the player_games data using the N root of the playtime_forever
     """
-    GLOBAL_NROOT = 2  # this is mainly used for
-    def __init__(self, denominator_function: str = "sum_max", playtime_approach: str = "minutes_always_more_than_60", nroot: int = -1, output_multiplier: int = 5, inplace: bool = False):
+    def __init__(self, denominator_function: str = "sum_max", playtime_approach: str = "minutes_always_more_than_60", nroot: int = 2, output_multiplier: int = 5, inplace: bool = False):
         super().__init__(denominator_function, playtime_approach, output_multiplier, inplace)
-        if nroot == -1:
-            self.nroot = RootPlaytimeNormalizer.GLOBAL_NROOT
-            RootPlaytimeNormalizer.GLOBAL_NROOT += 1
-        else:
-            self.nroot = nroot
+        self.nroot = nroot
 
     def normalize_value(self, playtime, denominator):
         return np.power(playtime, 1/self.nroot) / np.power(denominator, 1/self.nroot)
     
     def __repr__(self) -> str:
         return super().__repr__() + f"_{self.nroot}root"
+
+class CubicRootPlaytimeNormalizer(RootPlaytimeNormalizer):
+    """Used for experiments.py. Normalizes the player_games data using the cubic root of the playtime_forever
+    """
+    def __init__(self, denominator_function: str = "sum_max", playtime_approach: str = "minutes_always_more_than_60", output_multiplier: int = 5, inplace: bool = False):
+        super().__init__(denominator_function, playtime_approach, 3, output_multiplier, inplace)

@@ -210,7 +210,7 @@ def main(cull: int, interactive: bool):
     recommender_combinations = [recommender.RandomRecommenderSystem(), recommender.RatingBasedRecommenderSystem(game_details, player_games_playtimes[0])]
     if parallelize_similarities_and_recommenders:
         print("Instantiating ContentBasedRecommenderSystem with different thresholds and normalizers in parallel...")
-        futures = [process_executor.submit(recommender.ContentBasedRecommenderSystem, player_games_playtime, game_similarity, 0.2, False) for player_games_playtime in player_games_playtimes for game_similarity in game_similarities]
+        futures = [process_executor.submit(recommender.ContentBasedRecommenderSystem, player_games_playtimes[0], game_similarity, 0.2, False) for game_similarity in game_similarities]
         for future in cf.as_completed(futures):
             recommender_combinations.append(future.result())
         print("Instantiating PlaytimeBasedRecommenderSystem with different thresholds and normalizers in parallel...")
@@ -219,9 +219,8 @@ def main(cull: int, interactive: bool):
             recommender_combinations.append(future.result())
     else:
         print("Instantiating ContentBasedRecommenderSystem with different thresholds and normalizers in serial...")
-        for player_games_playtime in player_games_playtimes:
-            for game_similarity in game_similarities:
-                recommender_combinations.append(recommender.ContentBasedRecommenderSystem(player_games_playtime, game_similarity, 0.2, False))
+        for game_similarity in game_similarities:
+            recommender_combinations.append(recommender.ContentBasedRecommenderSystem(player_games_playtimes[0], game_similarity, 0.2, False))
         print("Instantiating PlaytimeBasedRecommenderSystem with different thresholds and normalizers in serial...")
         for player_games_playtime in player_games_playtimes:
             for user_similarity in user_similarities:
@@ -339,6 +338,8 @@ def main(cull: int, interactive: bool):
             "recall_at_20": recall_at_20
         }).to_csv(os.path.join(result_path, recommender_name, "results.csv"), index=False)
         print(f"Recommender system {recommender_name} finished")
+        if "Details" in recommender_name:
+            input("finished details fucking shit bruh")
         del results_list
         del recommender_system  # TODO unsure if this works
         garbage_collector.collect()

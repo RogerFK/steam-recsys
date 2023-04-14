@@ -1045,12 +1045,16 @@ class GameDetails(AbstractRecommenderData):
         
         def __str__(self):
             return f"GameBase(appid={self.appid}, name={self.name}, required_age={self.required_age}, is_free={self.is_free}, controller_support={self.controller_support}, has_demo={self.has_demo}, price_usd={self.price_usd}, mac_os={self.mac_os}, positive_reviews={self.positive_reviews}, negative_reviews={self.negative_reviews}, total_reviews={self.total_reviews}, has_achievements={self.has_achievements}, release_date={self.release_date}, coming_soon={self.coming_soon}, released={self.released}, rating={self.rating})"
+        def __repr__(self) -> str:
+            return self.__str__()
 
     def __init__(self, csv_filename: str, rating_multiplier: float = config.RATING_MULTIPLIER):
         super().__init__(csv_filename)
         logging.info("Processing game details and setting index on appid...")
         self.validate_data(self.data)
         self.data = self.data.set_index("appid")
+        self.data["release_date"] = pd.to_datetime(self.data["release_date"], format="%b %d, %Y", errors="coerce")
+        self._cached_all_games = [GameDetails.GameBase(appid, row, rating_multiplier) for appid, row in self.data.iterrows()]
         logging.info("Finished processing game details")
         self.rating_multiplier = rating_multiplier
 
@@ -1130,9 +1134,10 @@ class GameDetails(AbstractRecommenderData):
         ---
         * Generator[Game]: Game objects for all games
         """
-        # return [self.GameBase(appid, row, self.rating_multiplier) for appid, row in self.data.iterrows()]
-        for appid, row in self.data.iterrows():
-            yield self.GameBase(appid, row, self.rating_multiplier)
+        if self._cached_all_games is not None:
+            return self._cached_all_games
+        self._cached_all_games = [self.GameBase(appid, row, self.rating_multiplier) for appid, row in self.data.iterrows()]
+        return self._cached_all_games
     
     def __repr__(self):
         return f"GameDetails(rating_multiplier={self.rating_multiplier})"
@@ -2367,33 +2372,11 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
         # Compute the perfect game details with the average details except for the name and the release date
         perfect_game = {}
         perfect_game["name"] = f"Perfect Game for {steamid}"
-        # NOTE: This prioritizes recent games, maybe we should do the mean of the release dates instead
-        # perfect_game["release_date"] = datetime.now().strftime("%b %d, %Y")
-        all_release_dates = []
-        for release_date in user_games["release_date"]:
-            if release_date != "\\N":
-                try:
-                    all_release_dates.append(datetime.strptime(release_date, "%b %d, %Y"))
-                except:
-                    pass
-        # compute the average release date
-        # NOTE We should compute the average taking into account the playtime of each game
-        reference_date = datetime.strptime("Jan 01, 1970", "%b %d, %Y")
-        perfect_game["release_date"] = datetime.strftime(sum([release_date - reference_date for release_date in all_release_dates], timedelta()) / len(all_release_dates) + reference_date, "%b %d, %Y") if len(all_release_dates) > 0 else "\\N"
-        
+        perfect_game["release_date"] = user_games["release_date"].mean() if user_games["release_date"].count() > 0 else pd.NaT
+
         user_games = user_games.drop(columns=["appid", "name", "release_date", "steamid", "playtime_forever", "date_retrieved"])
         user_games = user_games.mean(numeric_only=False)
-        perfect_game["required_age"] = user_games["required_age"]
-        perfect_game["is_free"] = user_games["is_free"]
-        perfect_game["controller_support"] = user_games["controller_support"]
-        perfect_game["has_demo"] = user_games["has_demo"]
-        perfect_game["price_usd"] = user_games["price_usd"]
-        perfect_game["mac_os"] = user_games["mac_os"]
-        perfect_game["positive_reviews"] = user_games["positive_reviews"]
-        perfect_game["negative_reviews"] = user_games["negative_reviews"]
-        perfect_game["total_reviews"] = user_games["total_reviews"]
-        perfect_game["has_achievements"] = user_games["has_achievements"]
-        perfect_game["coming_soon"] = user_games["coming_soon"]
+        perfect_game = {**perfect_game, **user_games.to_dict()}
         
         perfect_game = GameDetails.GameBase(0, perfect_game)
         self.perfect_games[steamid] = perfect_game

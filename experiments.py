@@ -200,14 +200,15 @@ def main(cull: int, interactive: bool):
     normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer]
     # now get all the similarities, separated by game_similarities and user_similarities
     # similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractSimilarity)]
-    game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity]
+    game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
+    game_tag_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawGameTagSimilarity)]
     user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
     print("Normalization classes and similarity classes loaded.\nInstantiating player game data with different playtime normalizers. This might take very long...")
     # now we want to mix recommender.PlayerGamesPlaytime with every normalization class with thresholds from 0.1 to 0.9
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_thresholds = [0.9] # np.linspace(0.15, 0.75, 5)
+    player_games_thresholds = [0.15, 0.3] # [0.45, 0.6 , 0.75] # np.linspace(0.15, 0.75, 5)
     if paralellize_data_loading:
         print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in parallel...")
         futures = [process_executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in player_games_thresholds ] 
@@ -272,6 +273,7 @@ def main(cull: int, interactive: bool):
         input("If running with python -i experiments.py, you can now access game_categories, game_genres, and game_tags. Press CTRL-C to start interactive shell or Enter to continue...")
 
     game_info = {}
+    # game_tags_dict = { (threshold, weight_threshold, idf_weight) : recommender.GameTags(game_tags_csv, weight_threshold, threshold, idf_weight) for threshold in game_similarity_thresholds for weight_threshold in weight_thresholds for idf_weight in idf_weights }
     for thres in game_similarity_thresholds:
         # find the index of each recommender data in each list of recommender datas where their threshold is equal to thres
         # then use that index to get the recommender data from each list
@@ -312,6 +314,9 @@ def main(cull: int, interactive: bool):
         for game_similarity_type in game_similarity_types:
             for thres in game_similarity_thresholds:
                 game_similarities.append(game_similarity_type(game_info[thres]))
+        for game_tag_similarity in game_tag_similarity_types:
+            for game_tag in game_tags:
+                game_similarities.append(game_tag_similarity(game_tag))
         user_similarities = []
         for user_similarity_type in user_similarity_types:
             for pgdata in player_games_playtimes:

@@ -361,9 +361,9 @@ class GameTags(AbstractRecommenderData):
         ---
         filename (str): The filename of the game tags data. Defaults to "game_tags.csv".
         """
-        super().__init__(csv_filename, pickle_filename=None)
-        self.minhash_num_perm = num_perm
         self.repr_name = f"GameTags(thres={threshold:.2f}, wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
+        self.minhash_num_perm = num_perm
+        super().__init__(csv_filename, pickle_filename=None)
         if not os.path.exists(f"{BIN_DATA_PATH}/game_tags/"):
             os.makedirs(f"{BIN_DATA_PATH}/game_tags/")
         self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags/lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
@@ -1165,8 +1165,6 @@ class GameInfo():
         self.game_publishers = game_publishers
         self.game_genres = game_genres
         self.game_tags = game_tags
-        if any([game_details is None, game_categories is None, game_developers is None, game_publishers is None, game_genres is None, game_tags is None]):
-            raise ValueError("All arguments must be provided, and none should be None")
     
     def _get_game_from_row(self, row) -> Game:
         """

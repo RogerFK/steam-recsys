@@ -410,6 +410,8 @@ class GameTags(AbstractRecommenderData):
                         self.relevant_by_tag = pickle.load(f)
                         logging.info("Loaded relevant tags from file.")
                     GLOBAL_CACHE[self.relevant_by_tag_file] = self.relevant_by_tag
+        else:
+            rele_loaded = False
         if skip_lsh:
             if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
                 if self.lsh_ensemble_file in GLOBAL_CACHE:
@@ -421,6 +423,8 @@ class GameTags(AbstractRecommenderData):
                         self.lshensemble = pickle.load(f)
                         logging.info("Loaded LSH Ensemble from file.")
                     GLOBAL_CACHE[self.lsh_ensemble_file] = self.lshensemble
+        else:
+            ensemble_loaded = False
         if (ensemble_loaded or skip_lsh) \
                 and (skip_relevant or rele_loaded) \
                 and idf_loaded:
@@ -433,7 +437,7 @@ class GameTags(AbstractRecommenderData):
         logging.info("Computing MinHashes for each game...")
         
         if len(self.minhashes) != 0:
-            logging.info("Using global minhashes...")
+            logging.info("Using global minhashes and computing relevant tags and IDF for all games...")
             for appid, row in self.data.groupby("appid"):
                 # we only want to store the appids, we'll get the weights later
                 game_tags = row["tagid"].values
@@ -452,7 +456,7 @@ class GameTags(AbstractRecommenderData):
                         self.idf[tagid] = 0
                     self.idf[tagid] += 1
         else:
-            logging.info("Computing MinHashes for each game...")
+            logging.info("Computing MinHashes and computing relevant tags and IDF for all games...")
             ensemble_loaded = False
             for appid, row in self.data.groupby("appid"):
                 # we only want to store the appids, we'll get the weights later

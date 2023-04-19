@@ -36,17 +36,18 @@ class AbstractRecommenderData(ABC):
         csv_filename_no_ext_or_dir = csv_filename.split("/")[-1].split(".")[0] if not isinstance(csv_filename, DataFrame) else self.__class__.__name__
         if not os.path.exists(f"{BIN_DATA_PATH}/minhashes"):
             os.makedirs(f"{BIN_DATA_PATH}/minhashes")
-        self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle"
-        if os.path.exists(self.global_minhash_filename):
-            # first check if it's in the global cache
-            if self.global_minhash_filename in GLOBAL_CACHE:
-                logging.info(f"Loading minhashes for {self.__class__.__name__} from GLOBAL CACHE...")
-                self.minhashes = GLOBAL_CACHE[self.global_minhash_filename]
-            else:
-                logging.info(f"Loading minhashes for {self.__class__.__name__} from {self.global_minhash_filename}...")
-                with open(self.global_minhash_filename, "rb") as f:
-                    self.minhashes = pickle.load(f)
-                GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
+        if not self.global_minhash_filename == "ignore":  # special rule for GameTags
+            self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle"
+            if os.path.exists(self.global_minhash_filename):
+                # first check if it's in the global cache
+                if self.global_minhash_filename in GLOBAL_CACHE:
+                    logging.info(f"Loading minhashes for {self.__class__.__name__} from GLOBAL CACHE...")
+                    self.minhashes = GLOBAL_CACHE[self.global_minhash_filename]
+                else:
+                    logging.info(f"Loading minhashes for {self.__class__.__name__} from {self.global_minhash_filename}...")
+                    with open(self.global_minhash_filename, "rb") as f:
+                        self.minhashes = pickle.load(f)
+                    GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
 
         try:
             if pickle_filename is None:
@@ -351,7 +352,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
 class GameTags(AbstractRecommenderData):
     MAX_LENGTH = 20
 
-    def __init__(self, csv_filename: str = "data/game_tags.csv", weight_threshold=0.75, threshold=0.8, idf_weight=0.2, num_perm=128, num_part=32) -> None:
+    def __init__(self, csv_filename: str = "data/game_tags.csv", weight_threshold=0.75, threshold=0.8, idf_weight=0.2, num_perm=128, num_part=32, tag_names_csv: str = None) -> None:
         """
         Description:
         ---
@@ -361,12 +362,27 @@ class GameTags(AbstractRecommenderData):
         ---
         filename (str): The filename of the game tags data. Defaults to "game_tags.csv".
         """
-        self.repr_name = f"GameTags(thres={threshold:.2f}, wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
+        in_experiments = "experiments" in BIN_DATA_PATH # we assume Fallback will be set to false, so for thresholds < 1.0 we don't use the weight threshold
+        if not in_experiments:
+            self.repr_name = f"GameTags(thres={threshold:.2f}, wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
+        else:
+            if threshold >= 1.0:
+                self.repr_name = f"GameTags(wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
+                self.global_minhash_filename = "ignore"  # special rule
+            else:
+                self.repr_name = f"GameTags(thres={threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
+        skip_lsh = in_experiments and threshold >= 1.0
+        skip_relevant = in_experiments and threshold < 1.0
         self.minhash_num_perm = num_perm
         super().__init__(csv_filename, pickle_filename=None)
         if not os.path.exists(f"{BIN_DATA_PATH}/game_tags/"):
             os.makedirs(f"{BIN_DATA_PATH}/game_tags/")
         self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags/lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
+        
+        self.tag_names = pd.read_csv(tag_names_csv) if tag_names_csv is not None and os.path.exists(tag_names_csv) else None
+        if self.tag_names is not None:
+            self.validate_tag_names(self.tag_names)
+            self.tag_names.set_index("tagid", inplace=True)
         
         self.relevant_by_tag = {}  # tagid -> appids above weight threshold
         self.idf = {}  # tagid -> inverse document frequency
@@ -383,31 +399,35 @@ class GameTags(AbstractRecommenderData):
                     self.idf = pickle.load(f)
                     logging.info("Loaded IDFs from file.")
                 GLOBAL_CACHE[self.idf_file] = self.idf
-        if rele_loaded := os.path.exists(self.relevant_by_tag_file):
-            if self.relevant_by_tag_file in GLOBAL_CACHE:
-                self.relevant_by_tag = GLOBAL_CACHE[self.relevant_by_tag_file]
-                logging.info("Loaded relevant tags from GLOBAL CACHE.")
-            else:
-                with open(self.relevant_by_tag_file, "rb") as f:
-                    logging.info(f"Loading relevant tags from {f.name}...")
-                    self.relevant_by_tag = pickle.load(f)
-                    logging.info("Loaded relevant tags from file.")
-                GLOBAL_CACHE[self.relevant_by_tag_file] = self.relevant_by_tag
-        if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
-            if self.lsh_ensemble_file in GLOBAL_CACHE:
-                self.lshensemble = GLOBAL_CACHE[self.lsh_ensemble_file]
-                logging.info("Loaded LSH Ensemble from GLOBAL CACHE.")
-            else:
-                with open(self.lsh_ensemble_file, "rb") as f:
-                    logging.info(f"Loading LSH Ensemble from {f.name}...")
-                    self.lshensemble = pickle.load(f)
-                    logging.info("Loaded LSH Ensemble from file.")
-                GLOBAL_CACHE[self.lsh_ensemble_file] = self.lshensemble
-        if ensemble_loaded and rele_loaded and idf_loaded:
+        if skip_relevant:
+            if rele_loaded := os.path.exists(self.relevant_by_tag_file):
+                if self.relevant_by_tag_file in GLOBAL_CACHE:
+                    self.relevant_by_tag = GLOBAL_CACHE[self.relevant_by_tag_file]
+                    logging.info("Loaded relevant tags from GLOBAL CACHE.")
+                else:
+                    with open(self.relevant_by_tag_file, "rb") as f:
+                        logging.info(f"Loading relevant tags from {f.name}...")
+                        self.relevant_by_tag = pickle.load(f)
+                        logging.info("Loaded relevant tags from file.")
+                    GLOBAL_CACHE[self.relevant_by_tag_file] = self.relevant_by_tag
+        if skip_lsh:
+            if ensemble_loaded := os.path.exists(self.lsh_ensemble_file):
+                if self.lsh_ensemble_file in GLOBAL_CACHE:
+                    self.lshensemble = GLOBAL_CACHE[self.lsh_ensemble_file]
+                    logging.info("Loaded LSH Ensemble from GLOBAL CACHE.")
+                else:
+                    with open(self.lsh_ensemble_file, "rb") as f:
+                        logging.info(f"Loading LSH Ensemble from {f.name}...")
+                        self.lshensemble = pickle.load(f)
+                        logging.info("Loaded LSH Ensemble from file.")
+                    GLOBAL_CACHE[self.lsh_ensemble_file] = self.lshensemble
+        if (ensemble_loaded or skip_lsh) \
+                and (skip_relevant or rele_loaded) \
+                and idf_loaded:
             logging.info("Done. Using previous LSH Ensemble, IDFs, and relevant tags.")
             return
         self.validate_data(self.data)
-        if not ensemble_loaded:
+        if not ensemble_loaded and not skip_lsh:
             self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
         lsh_ensemble_index = []
         logging.info("Computing MinHashes for each game...")
@@ -417,16 +437,16 @@ class GameTags(AbstractRecommenderData):
             for appid, row in self.data.groupby("appid"):
                 # we only want to store the appids, we'll get the weights later
                 game_tags = row["tagid"].values
-                min_hash = self.minhashes[appid][0]
-                game_tags_length = len(game_tags)
-                lsh_ensemble_index.append((appid, min_hash, game_tags_length))
-                self.minhashes[appid] = (min_hash, game_tags_length)
+                min_hash, game_tags_length = self.minhashes[appid]
+                if not skip_lsh:
+                    lsh_ensemble_index.append((appid, min_hash, game_tags_length))
                 if self.processed_data is not None:
                     continue
-                for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
-                    if tagid not in self.relevant_by_tag:
-                        self.relevant_by_tag[tagid] = set()
-                    self.relevant_by_tag[tagid].add(appid)
+                if not skip_relevant:
+                    for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
+                        if tagid not in self.relevant_by_tag:
+                            self.relevant_by_tag[tagid] = set()
+                        self.relevant_by_tag[tagid].add(appid)
                 for tagid in game_tags:
                     if tagid not in self.idf:
                         self.idf[tagid] = 0
@@ -437,23 +457,25 @@ class GameTags(AbstractRecommenderData):
             for appid, row in self.data.groupby("appid"):
                 # we only want to store the appids, we'll get the weights later
                 game_tags = row["tagid"].values
-                min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
-                min_hash.update_batch(game_tags)
-                game_tags_length = len(game_tags)
-                lsh_ensemble_index.append((appid, min_hash, game_tags_length))
-                self.minhashes[appid] = (min_hash, game_tags_length)
+                if not skip_lsh:
+                    min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
+                    min_hash.update_batch(game_tags)
+                    game_tags_length = len(game_tags)
+                    lsh_ensemble_index.append((appid, min_hash, game_tags_length))
+                    self.minhashes[appid] = (min_hash, game_tags_length)
                 if self.processed_data is not None:
                     continue
-                for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
-                    if tagid not in self.relevant_by_tag:
-                        self.relevant_by_tag[tagid] = set()
-                    self.relevant_by_tag[tagid].add(appid)
+                if not skip_relevant:
+                    for tagid in row.loc[row["weight"] >= weight_threshold, "tagid"].values:
+                        if tagid not in self.relevant_by_tag:
+                            self.relevant_by_tag[tagid] = set()
+                        self.relevant_by_tag[tagid].add(appid)
                 for tagid in game_tags:
                     if tagid not in self.idf:
                         self.idf[tagid] = 0
                     self.idf[tagid] += 1
-                    
-            if not os.path.exists(self.global_minhash_filename):
+            
+            if not skip_lsh and not os.path.exists(self.global_minhash_filename):
                 with open(self.global_minhash_filename, "wb") as f:
                     logging.info("Dumping global minhashes...")
                     pickle.dump(self.minhashes, f)
@@ -463,7 +485,7 @@ class GameTags(AbstractRecommenderData):
         total_games = self.data["appid"].nunique()
         for tagid in self.idf:
             self.idf[tagid] = idf_weight * math.log(total_games / self.idf[tagid]) + max(1.0 - idf_weight, 0)
-        if not ensemble_loaded:
+        if not ensemble_loaded and not skip_lsh:
             logging.info(f"MinHashes computed. Computing MinHashLSHEnsemble index...")
             self.lshensemble.index(lsh_ensemble_index)
             logging.info("MinHashLSHEnsemble index computed.")
@@ -472,7 +494,7 @@ class GameTags(AbstractRecommenderData):
                 pickle.dump(self.lshensemble, f)
                 logging.info(f"Dumped MinHashLSHEnsemble to {f.name}")
             GLOBAL_CACHE[self.lsh_ensemble_file] = self.lshensemble
-        if not rele_loaded:
+        if not rele_loaded and not skip_relevant:
             with open(self.relevant_by_tag_file, "wb") as f:
                 logging.info("Dumping relevant_by_tag...")
                 pickle.dump(self.relevant_by_tag, f)
@@ -494,6 +516,14 @@ class GameTags(AbstractRecommenderData):
             raise ValueError("data must have a 'tagid' column")
         if not "weight" in data.columns:
             raise ValueError("data must have a 'weight' column")
+    
+    def validate_tag_names(self, tag_names: DataFrame):
+        if not isinstance(tag_names, DataFrame):
+            raise TypeError("tag_names must be a pandas DataFrame")
+        if not "tagid" in tag_names.columns:
+            raise ValueError("tag_names must have a 'tagid' column")
+        if not "tag" in tag_names.columns:
+            raise ValueError("tag_names must have a 'name' column")
     
     def rating(self, appid, tagid) -> float:
         """
@@ -572,20 +602,6 @@ class GameTags(AbstractRecommenderData):
             game_tags["weight"] = weights
         return game_tags.set_index("tagid")["weight"].to_dict()
     
-    # TODO unused, maybe remove
-    def get_weighted_tags_for_list(self, appids: List[int]) -> Dict[int, Dict[int, float]]:
-        """Gets the tags for a list of games.
-
-        Args:
-        ---
-        appids (List[int]): The appids of the games
-
-        Returns:
-        ---
-        Dict[int, Dict[int, float]]: The tags the games have
-        """
-        return {appid: self.get_tags(appid) for appid in appids}
-    
     def get_relevant_games(self, tagid: int) -> Set[int]:
         """Gets the games that have a tag above the weight threshold set in the constructor.
 
@@ -621,9 +637,12 @@ class GameTags(AbstractRecommenderData):
         ---
         str: The name of the tag
         """
-        # TODO
-        return tagid
-        # return self.tag_names[tagid]
+        if self.tag_names is not None:
+            try:
+                return self.tag_names.loc[tagid, "name"].values[0]
+            except IndexError:
+                pass
+        return str(tagid)
 
     get_appids_with_itemid = get_relevant_games
     
@@ -1409,7 +1428,7 @@ class RawUserSimilarity(AbstractSimilarity):
         else:
             own_games_played = self._own_games_played
         # own_games_played = self.pgdata.get_user_games(steamid)
-        
+        own_game_count = len(own_games_played)
         other_games_played = self.pgdata.get_user_games(other)
         
         # we only want to compare the games that both users have played
@@ -1420,8 +1439,9 @@ class RawUserSimilarity(AbstractSimilarity):
             _, appid, own_pseudorating = row
             if own_pseudorating > 0:
                 total_score += self.pgdata.rating(other, appid) * own_pseudorating
-
-        return total_score  # raw score, but don't penalize for having more games
+        # raw score, but don't penalize for having more games
+        # we divide by len since it's a constant (it doesn't influence the results) and prevents overflowing
+        return total_score / own_game_count
 
     def player_similarities_from_priority_queue(self, priority_queue: PriorityQueue) -> DataFrame:
         """Gets the similarities from a priority queue
@@ -2335,7 +2355,7 @@ class GameDetailsSimilarity(AbstractGameSimilarity):
 
         # Compute the similarity between the perfect game and all the other games
         similarities = {}
-        for game in self.game_details.get_all_games():  # TODO this is probably extremely slow
+        for game in self.game_details.get_all_games():
             similarities[game.appid] = self.similarity(perfect_game, game)
 
         return sorted(similarities.items(), key=lambda x: x[1], reverse=True), perfect_game
@@ -2453,8 +2473,6 @@ class AbstractRecommenderSystem(ABC):
             games = self.score_results[steamid]
         else:
             logging.info(f"{self.__repr__()}: Generating recommendations for {steamid}.")
-            # TODO: maybe delete some old results to save memory
-            #       bet there is a hook for the GC to make this easier
             games = self.generate_recommendations(steamid)
             logging.info(f"{self.__repr__()}: Finished generating recommendations for {steamid}.")
             # sort games
@@ -2635,7 +2653,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
                 appid = int(appid)
                 if not appid in games:
                     games[appid] = 0
-                games[appid] += pseudorating * (similarity ** 1.5)  # TODO: fix overflowing in * and +
+                games[appid] += pseudorating * (similarity ** 2)
         return games
 
     

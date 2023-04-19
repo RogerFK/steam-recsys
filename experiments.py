@@ -240,7 +240,7 @@ def main(cull: int, interactive: bool):
     game_genres_csv = pd.read_csv('data/game_genres.csv')
     game_tags_csv = pd.read_csv('data/game_tags.csv')
     idf_weights = np.linspace(0, 0.3, 3)
-    weight_thresholds = np.linspace(0.5, 1, 3)
+    weight_thresholds = [0.75, 1] # np.linspace(0.5, 1, 3)
     if paralellize_data_loading:
         print("Instantiating complex Recommender Data with different thresholds in parallel...")
 
@@ -266,9 +266,13 @@ def main(cull: int, interactive: bool):
         for threshold in game_similarity_thresholds:
             game_categories.append(recommender.GameCategories(game_categories_csv, threshold))
             game_genres.append(recommender.GameGenres(game_genres_csv, threshold))
-            for weight_threshold in weight_thresholds:
+            if threshold >= 1.0:
+                for weight_threshold in weight_thresholds:
+                    for idf_weight in idf_weights:
+                        game_tags.append(recommender.GameTags(game_tags_csv, weight_threshold, threshold, idf_weight))
+            else:
                 for idf_weight in idf_weights:
-                    game_tags.append(recommender.GameTags(game_tags_csv, weight_threshold, threshold, idf_weight))
+                    game_tags.append(recommender.GameTags(game_tags_csv, 1, threshold, idf_weight))
     if interactive:
         input("If running with python -i experiments.py, you can now access game_categories, game_genres, and game_tags. Press CTRL-C to start interactive shell or Enter to continue...")
 
@@ -287,13 +291,8 @@ def main(cull: int, interactive: bool):
             if gg.lshensemble.threshold == thres:
                 game_genre = gg
                 break
-        game_tag = None
-        for gt in game_tags:  # TODO IMPORTANT this doesn't take into account the idf_weight and weight_threshold
-            if gt.lshensemble.threshold == thres:
-                game_tag = gt
-                break
         
-        game_info[thres] = recommender.GameInfo(game_details, game_category, game_developers, game_publishers, game_genre, game_tag)
+        game_info[thres] = recommender.GameInfo(game_details, game_category, game_developers, game_publishers, game_genre, None)
     # NOTE: this one and the next ones are probably faster in single-threaded mode
     if parallelize_similarities_and_recommenders:
         print("Instantiating GameSimilarities with their respective recommender data in parallel...")

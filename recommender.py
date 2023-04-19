@@ -36,7 +36,7 @@ class AbstractRecommenderData(ABC):
         csv_filename_no_ext_or_dir = csv_filename.split("/")[-1].split(".")[0] if not isinstance(csv_filename, DataFrame) else self.__class__.__name__
         if not os.path.exists(f"{BIN_DATA_PATH}/minhashes"):
             os.makedirs(f"{BIN_DATA_PATH}/minhashes")
-        if not self.global_minhash_filename == "ignore":  # special rule for GameTags
+        if getattr(self, 'global_minhash_filename', '___undefined') == '___undefined':  # special rule for GameTags
             self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/{csv_filename_no_ext_or_dir}.pickle"
             if os.path.exists(self.global_minhash_filename):
                 # first check if it's in the global cache

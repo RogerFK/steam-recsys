@@ -140,8 +140,6 @@ def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem,
         "recall_at_20": recall_at_20
     }).to_csv(os.path.join(result_path, recommender_name, "results.csv"), index=False)
     print(f"Recommender system {recommender_name} finished")
-    if "Details" in recommender_name:
-        input("finished details fucking shit bruh")
     del results_list
     del recommender_system  # TODO unsure if this works
     garbage_collector.collect()
@@ -202,6 +200,7 @@ def main(cull: int, interactive: bool):
     # similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractSimilarity)]
     game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
     game_tag_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawGameTagSimilarity)]
+    
     user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
     print("Normalization classes and similarity classes loaded.\nInstantiating player game data with different playtime normalizers. This might take very long...")
     # now we want to mix recommender.PlayerGamesPlaytime with every normalization class with thresholds from 0.1 to 0.9

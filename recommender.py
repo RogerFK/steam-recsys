@@ -1807,7 +1807,7 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         return list(self.game_tags.get_tags(appid).items())
     
     def __repr__(self) -> str:
-        return f"RawGameTagSimilarity with game_tags={self.game_tags}"
+        return f"{self.__class__.__name__} with game_tags={self.game_tags}"
 
 class CosineGameTagSimilarity(RawGameTagSimilarity):
     def __init__(self, game_tags_or_game_info: Union[GameTags, GameInfo]) -> None:

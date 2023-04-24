@@ -23,6 +23,13 @@ import gc as garbage_collector
 # If the data isn't there, we will split the data and save it to the data/ folder using the default values.
 import split_train_test
 
+
+# change BIN_DATA_PATH to "bin_data_test" to avoid conflicts
+recommender.BIN_DATA_PATH = "experiments/bin_data/"
+result_path = "experiments/results/"
+os.makedirs(recommender.BIN_DATA_PATH, exist_ok=True)
+os.makedirs(result_path, exist_ok=True)
+
 def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, recommender_name, steamid: int):
     # beforehand, check if there's results already
     results_file = os.path.join(result_path, recommender_name, f"{steamid}_results.csv")
@@ -153,11 +160,6 @@ def handler(signum, frame):
 
 # signal.signal(signal.SIGINT, handler)
 
-# change BIN_DATA_PATH to "bin_data_test" to avoid conflicts
-recommender.BIN_DATA_PATH = "experiments/bin_data/"
-result_path = "experiments/results/"
-os.makedirs(recommender.BIN_DATA_PATH, exist_ok=True)
-os.makedirs(result_path, exist_ok=True)
 
 paralellize_data_loading = False
 if paralellize_data_loading:
@@ -207,7 +209,7 @@ def main(cull: int, interactive: bool):
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_thresholds = [0.15, 0.3] # [0.45, 0.6 , 0.75] # np.linspace(0.15, 0.75, 5)
+    player_games_thresholds = [0.15] # [0.3, 0.45, 0.6, 0.75] # np.linspace(0.15, 0.75, 5)
     if paralellize_data_loading:
         print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in parallel...")
         futures = [process_executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in player_games_thresholds ] 
@@ -238,7 +240,7 @@ def main(cull: int, interactive: bool):
     game_categories_csv = pd.read_csv('data/game_categories.csv')
     game_genres_csv = pd.read_csv('data/game_genres.csv')
     game_tags_csv = pd.read_csv('data/game_tags.csv')
-    idf_weights = np.linspace(0, 0.3, 3)
+    idf_weights = np.linspace(0, 0.6, 3)
     weight_thresholds = [0.75, 1] # np.linspace(0.5, 1, 3)
     if paralellize_data_loading:
         print("Instantiating complex Recommender Data with different thresholds in parallel...")
@@ -347,16 +349,19 @@ def main(cull: int, interactive: bool):
     if cull > 0:
         steamids = steamids[:cull]
     # now we can run the experiments
-    recommender_names = []
     for recommender_system in recommender_combinations:
         recommender_name = repr(recommender_system)
-        recommender_names.append(recommender_name)
         recommender_logic(recommender_system, recommender_name, steamids, test_data)
     
     print("Finished running all recommender systems. Calculating average precision and recall, and plotting...")
+
+    
+
+def plot_results():
     # now we can calculate the average precision and recall for each recommender system
     # first we need to get the names of the recommender systems
-    recommender_names = [recommender_name for recommender_name in recommender_names]
+    recommender_names = subfolders = [ f.path for f in os.scandir(result_path) if f.is_dir() ]
+    recommender_names = [recommender_name.split("/")[-1] for recommender_name in recommender_names]
     # now we can calculate the average precision and recall
     average_precision = []
     average_precision_at_5 = []
@@ -370,18 +375,31 @@ def main(cull: int, interactive: bool):
     average_recall_at_20 = []
     for recommender_name in recommender_names:
         # first we need to get the results
-        results = pd.read_csv(os.path.join(result_path, recommender_name, "results.csv"))
-        # now we can calculate the average precision and recall
-        average_precision.append(results["precision"].mean())
-        average_precision_at_5.append(results["precision_at_5"].mean())
-        average_precision_at_10.append(results["precision_at_10"].mean())
-        average_precision_at_12.append(results["precision_at_12"].mean())
-        average_precision_at_20.append(results["precision_at_20"].mean())
-        average_recall.append(results["recall"].mean())
-        average_recall_at_5.append(results["recall_at_5"].mean())
-        average_recall_at_10.append(results["recall_at_10"].mean())
-        average_recall_at_12.append(results["recall_at_12"].mean())
-        average_recall_at_20.append(results["recall_at_20"].mean())
+        try:
+            results = pd.read_csv(os.path.join(result_path, recommender_name, "results.csv"))
+            # now we can calculate the average precision and recall
+            average_precision.append(results["precision"].mean())
+            average_precision_at_5.append(results["precision_at_5"].mean())
+            average_precision_at_10.append(results["precision_at_10"].mean())
+            average_precision_at_12.append(results["precision_at_12"].mean())
+            average_precision_at_20.append(results["precision_at_20"].mean())
+            average_recall.append(results["recall"].mean())
+            average_recall_at_5.append(results["recall_at_5"].mean())
+            average_recall_at_10.append(results["recall_at_10"].mean())
+            average_recall_at_12.append(results["recall_at_12"].mean())
+            average_recall_at_20.append(results["recall_at_20"].mean())
+        except FileNotFoundError:
+            print("Could not find results for recommender system (maybe it hasn't finished?): " + recommender_name)
+            average_precision.append(np.NaN)
+            average_precision_at_5.append(np.NaN)
+            average_precision_at_10.append(np.NaN)
+            average_precision_at_12.append(np.NaN)
+            average_precision_at_20.append(np.NaN)
+            average_recall.append(np.NaN)
+            average_recall_at_5.append(np.NaN)
+            average_recall_at_10.append(np.NaN)
+            average_recall_at_12.append(np.NaN)
+            average_recall_at_20.append(np.NaN)
 
     # now we can store the results
     final_results = pd.DataFrame({
@@ -419,10 +437,6 @@ def main(cull: int, interactive: bool):
     ax[1].legend()
     fig.savefig(os.path.join(result_path, "results.png"))
     fig.show()
-
-def plot_results():
-    # TODO: plot the results, read the results from the results folder
-    pass
 
 if __name__ == "__main__":
     try:

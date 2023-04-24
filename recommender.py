@@ -1281,7 +1281,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         self.recommender_data = recommender_data
         self.item_weight_max_length = 0  # used to cull
         try:
-            self.skip_querying = self.recommender_data.lshensemble.threshold > 1
+            self.skip_querying = self.recommender_data.lshensemble.threshold >= 1.0
         except AttributeError:
             self.skip_querying = False
 

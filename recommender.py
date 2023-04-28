@@ -27,7 +27,8 @@ GLOBAL_CACHE = {}  # used mainly to not run out of RAM in experiments.py
 
 class AbstractRecommenderData(ABC):
     
-    def __init__(self, csv_filename: Union[str, DataFrame], pickle_filename: str = None):
+    def __init__(self, csv_filename: Union[str, DataFrame], pickle_filename: str = None, threshold: int = 0):
+        self.threshold = threshold
         self.processed_data = None
         self.data: pd.DataFrame = pd.DataFrame()
         self.minhashes = {}
@@ -175,7 +176,7 @@ class AbstractRecommenderData(ABC):
         ---
         * List[int]: A list of appids
         """
-        return self.data[self.data[tagid] == 1].index.tolist()
+        return self.data[self.data.iloc[:, 1] == tagid].index.tolist()
 
 class PlayerGamesPlaytime(AbstractRecommenderData):
     pickle_name_fmt = "PGPTData/thres{}_perm{}part{}"
@@ -184,7 +185,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             os.makedirs(f"{BIN_DATA_PATH}/PGPTData")
         self.pickle_name = self.pickle_name_fmt.format(f"{threshold:.2f}", num_perm, num_part)
         self.repr_name = f"PlayerGamesPlaytime({playtime_normalizer}, {threshold:.2f}, {num_perm}, {num_part})"
-        super().__init__(filename, self.pickle_name)  # load the processed data if it exists
+        super().__init__(filename, self.pickle_name, threshold)  # load the processed data if it exists
         self.playtime_normalizer = playtime_normalizer
         self.minhash_num_perm = num_perm
         self.dirty = self.processed_data is None
@@ -366,15 +367,15 @@ class GameTags(AbstractRecommenderData):
         if not in_experiments:
             self.repr_name = f"GameTags(thres={threshold:.2f}, wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
         else:
-            if threshold >= 1.0:
+            if threshold > 1.0:
                 self.repr_name = f"GameTags(wt={weight_threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
                 self.global_minhash_filename = "ignore"  # special rule
             else:
                 self.repr_name = f"GameTags(thres={threshold:.2f}, idf_w={idf_weight:.2f}, perm={num_perm}, part={num_part})"
-        skip_lsh = in_experiments and threshold >= 1.0
+        skip_lsh = in_experiments and threshold > 1.0
         skip_relevant = in_experiments and threshold < 1.0
         self.minhash_num_perm = num_perm
-        super().__init__(csv_filename, pickle_filename=None)
+        super().__init__(csv_filename, pickle_filename=None, threshold=threshold)
         if not os.path.exists(f"{BIN_DATA_PATH}/game_tags/"):
             os.makedirs(f"{BIN_DATA_PATH}/game_tags/")
         self.lsh_ensemble_file = f"{BIN_DATA_PATH}/game_tags/lsh_th{threshold:.2f}_pm{num_perm}_pt{num_part}.pickle"
@@ -656,8 +657,12 @@ class GameTags(AbstractRecommenderData):
 # this class below is the same as GameTagsData but uses game_genres.csv instead
 class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limited, so this is not very useful. Hence, we won't waste much time on it.
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
+        if threshold > 1:
+            self.repr_name = f"GameGenres(nolsh)"
+            super().__init__(csv_filename, None, threshold)
+            return
         self.pickle_filename = f"game_genres_thres{threshold:.2f}_perm{num_perm}_part{num_part}"
-        super().__init__(csv_filename, self.pickle_filename)
+        super().__init__(csv_filename, self.pickle_filename, threshold)
         self.repr_name = f"GameGenres(thres={threshold:.2f}, perm={num_perm}, part={num_part})"
         self.minhash_num_perm = num_perm
         if self.processed_data is not None:
@@ -766,9 +771,13 @@ class GameGenres(AbstractRecommenderData):  # NOTE: Game genres are fairly limit
 # Thus, we won't waste much time on this either.
 class GameCategories(AbstractRecommenderData):
     def __init__(self, csv_filename: str, threshold=0.8, num_perm=128, num_part=32):
+        if threshold > 1:
+            self.repr_name = f"GameCategories(nolsh)"
+            super().__init__(csv_filename, None, threshold)
+            return
         self.pickle_filename = f"game_categories_thres{threshold:.2f}_perm{num_perm}_part{num_part}"
         self.repr_name = f"GameCategories(thres={threshold:.2f}, perm={num_perm}, part={num_part})"
-        super().__init__(csv_filename, self.pickle_filename)
+        super().__init__(csv_filename, self.pickle_filename, threshold)
         self.minhash_num_perm = num_perm
         if self.processed_data is not None:
             self.lshensemble = self.processed_data["lshensemble"]
@@ -1281,7 +1290,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         self.recommender_data = recommender_data
         self.item_weight_max_length = 0  # used to cull
         try:
-            self.skip_querying = self.recommender_data.lshensemble.threshold >= 1.0
+            self.skip_querying = self.recommender_data.threshold > 1.0
         except AttributeError:
             self.skip_querying = False
 
@@ -1335,7 +1344,7 @@ class AbstractGameSimilarity(AbstractSimilarity):  # NOTE: This class is only us
         ---
         Tuple[List[int], Dict[int, float]]: A tuple containing a list of the appids of the games and a dictionary containing the weights of the tags
         """
-        if self.recommender_data.lshensemble.threshold >= 1:
+        if self.recommender_data.threshold >= 1:
             return [], self.get_item_weights(steamid, user_games)
         user_minhash = MinHash(self.recommender_data.minhash_num_perm, hashfunc=trivial_hash)
         user_weights = self.get_item_weights(steamid, user_games)
@@ -2892,6 +2901,8 @@ class ContentBasedRecommenderSystem(AbstractRecommenderSystem):
                 return {}
             if not skip_querying:
                 logging.warning(f"Recommender {self} returned no games for user {steamid}. Falling back to get_appids_with_itemid (slightly slower)")
+            if skip_querying:
+                item_weights = self.game_similarity.get_item_weights(steamid, self.pgdata.get_user_games(steamid))
             for itemid in item_weights.keys():
                 for appid in self.recommender_data.get_appids_with_itemid(itemid):
                     games[appid] = self.score_generation(appid, item_weights)

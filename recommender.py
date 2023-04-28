@@ -179,13 +179,14 @@ class AbstractRecommenderData(ABC):
         return self.data[self.data.iloc[:, 1] == tagid].index.tolist()
 
 class PlayerGamesPlaytime(AbstractRecommenderData):
-    pickle_name_fmt = "PGPTData/thres{}_perm{}part{}"
-    def __init__(self, filename: str, playtime_normalizer: AbstractPlaytimeNormalizer, threshold=0.8, num_perm=128, num_part=32):
+    pickle_name_fmt = "PGPTData/thres{}_rel{}_perm{}part{}"
+    def __init__(self, filename: str, playtime_normalizer: AbstractPlaytimeNormalizer, relevant_threshold=0.6, minhash_threshold=0.8, num_perm=128, num_part=32):
         if not os.path.exists(f"{BIN_DATA_PATH}/PGPTData"):
             os.makedirs(f"{BIN_DATA_PATH}/PGPTData")
-        self.pickle_name = self.pickle_name_fmt.format(f"{threshold:.2f}", num_perm, num_part)
-        self.repr_name = f"PlayerGamesPlaytime({playtime_normalizer}, {threshold:.2f}, {num_perm}, {num_part})"
-        super().__init__(filename, self.pickle_name, threshold)  # load the processed data if it exists
+        self.pickle_name = self.pickle_name_fmt.format(f"{minhash_threshold:.2f}", f"{relevant_threshold:.2f}", num_perm, num_part)
+        self.repr_name = f"PlayerGamesPlaytime({playtime_normalizer}, {minhash_threshold:.2f}, {num_perm}, {num_part})"
+        self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/pgpt{relevant_threshold}.pickle"
+        super().__init__(filename, self.pickle_name, minhash_threshold)  # load the processed data if it exists
         self.playtime_normalizer = playtime_normalizer
         self.minhash_num_perm = num_perm
         self.dirty = self.processed_data is None
@@ -214,34 +215,42 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
                 pickle.dump(self.data, f)
                 logging.info("Normalized data dumped to file")
             GLOBAL_CACHE[self.norm_file] = self.data
-        if not self.dirty and len(self.minhashes) > 0:
-            return
-
+        
         # compute the MinHashLSHEnsemble index
         # http://ekzhu.com/datasketch/lshensemble.html#minhash-lsh-ensemble
-        self.lshensemble = MinHashLSHEnsemble(threshold=threshold, num_perm=num_perm, num_part=num_part)
-        lsh_ensemble_index = []
-        if len(self.minhashes) != 0:
+        if self.dirty:
+            self.lshensemble = MinHashLSHEnsemble(threshold=minhash_threshold, num_perm=num_perm, num_part=num_part)
+        if self.global_minhash_filename in GLOBAL_CACHE:
             logging.info("Using global minhashes...")
-            for steamid, (min_hash, length) in self.minhashes.items():
-                lsh_ensemble_index.append((steamid, min_hash, length))
+            self.minhashes = GLOBAL_CACHE[self.global_minhash_filename]
+            if not self.dirty:
+                return
+        elif os.path.exists(self.global_minhash_filename):
+            logging.info("Loading global minhashes...")
+            with open(self.global_minhash_filename, "rb") as f:
+                self.minhashes = pickle.load(f)
+                GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
         else:
             logging.info("Computing MinHashes for each user...")
-            for steamid, row in self.data.groupby("steamid"):
+            for steamid, user_games in self.data.groupby("steamid"):
                 # we only want to store the appids, we'll get the playtimes later
-                user_games = row["appid"].values
+                user_games.drop(["steamid"], axis=1, inplace=True)
                 min_hash = MinHash(num_perm=num_perm, hashfunc=trivial_hash)
-                min_hash.update_batch(user_games)
-                user_games_length = len(user_games)
-                lsh_ensemble_index.append((steamid, min_hash, user_games_length))
+                max_playtime = user_games["playtime_forever"].max()
+                # NOTE: relevant_threshold is a percentage of the max playtime
+                relevant_appids = user_games[user_games["playtime_forever"] >= relevant_threshold * max_playtime]["appid"].tolist()
+                min_hash.update_batch(relevant_appids)
+                user_games_length = len(relevant_appids)
                 self.minhashes[steamid] = (min_hash, user_games_length)
             logging.info("MinHashes computed.")
-            if not os.path.exists(self.global_minhash_filename):
-                with open(self.global_minhash_filename, "wb") as f:
-                    pickle.dump(self.minhashes, f)
+            with open(self.global_minhash_filename, "wb") as f:
+                pickle.dump(self.minhashes, f)
             GLOBAL_CACHE[self.global_minhash_filename] = self.minhashes
+
+        if not self.dirty:
+            return
         logging.info("Computing MinHashLSHEnsemble index...")
-        self.lshensemble.index(lsh_ensemble_index)
+        self.lshensemble.index([steamid, min_hash, length] for steamid, (min_hash, length) in self.minhashes.items())
         logging.info("MinHashLSHEnsemble index computed.")
         
         self.processed_data = {

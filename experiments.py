@@ -209,19 +209,13 @@ def main(cull: int, interactive: bool, only_playtime: bool):
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_thresholds = [0.5, 0.625, 0.75, 0.8]
-    if paralellize_data_loading:
-        print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in parallel...")
-        futures = [process_executor.submit(recommender.PlayerGamesPlaytime, train_data, normalization_class(), threshold) for normalization_class in normalization_classes for threshold in player_games_thresholds ] 
-        for future in cf.as_completed(futures):
-            player_games_playtimes.append(future.result())
-    else:
-        # NOTE: This one is WAY faster and wastes less RAM (which was somewhat expected)
-        # TODO: Cache PlayerGamesPlaytime objects to avoid reloading them with some global dict if they've been loaded
-        print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
-        for normalization_class in normalization_classes:
-            for threshold in player_games_thresholds:
-                player_games_playtimes.append(recommender.PlayerGamesPlaytime(train_data, normalization_class(), threshold))
+    player_games_minhash_thresholds = [0.5, 0.625, 0.75, 0.8]
+    pg_relevant_thresholds = [0.6, 0.75]
+    print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
+    for normalization_class in normalization_classes:
+        for minhash_threshold in player_games_minhash_thresholds:
+            for relevant_threshold in pg_relevant_thresholds:
+                player_games_playtimes.append(recommender.PlayerGamesPlaytime(train_data, normalization_class(), relevant_threshold, minhash_threshold))
     if interactive:
         input("If running with python -i experiments.py, you can now access player_games_playtimes. Press CTRL-C to start interactive shell or Enter to continue...")
     # now we want to mix recommender.PlayerGamesPlaytime with every recommender class
@@ -244,16 +238,16 @@ def main(cull: int, interactive: bool, only_playtime: bool):
         weight_thresholds = [0.75, 1] # np.linspace(0.5, 1, 3)
         
         print("Instantiating complex Recommender Data with different thresholds in serial...")
-        for threshold in game_similarity_thresholds:
-            game_categories.append(recommender.GameCategories(game_categories_csv, threshold))
-            game_genres.append(recommender.GameGenres(game_genres_csv, threshold))
-            if threshold > 1.0:
+        for minhash_threshold in game_similarity_thresholds:
+            game_categories.append(recommender.GameCategories(game_categories_csv, minhash_threshold))
+            game_genres.append(recommender.GameGenres(game_genres_csv, minhash_threshold))
+            if minhash_threshold > 1.0:
                 for weight_threshold in weight_thresholds:
                     for idf_weight in idf_weights:
-                        game_tags.append(recommender.GameTags(game_tags_csv, weight_threshold, threshold, idf_weight))
+                        game_tags.append(recommender.GameTags(game_tags_csv, weight_threshold, minhash_threshold, idf_weight))
             else:
                 for idf_weight in idf_weights:
-                    game_tags.append(recommender.GameTags(game_tags_csv, 1, threshold, idf_weight))
+                    game_tags.append(recommender.GameTags(game_tags_csv, 1, minhash_threshold, idf_weight))
         if interactive:
             input("If running with python -i experiments.py, you can now access game_categories, game_genres, and game_tags. Press CTRL-C to start interactive shell or Enter to continue...")
 

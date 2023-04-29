@@ -53,37 +53,20 @@ def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, re
     print(f"Recommender system {recommender_name} finished for steamid {steamid}")
     return (steamid, results)
 
-def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem, recommender_name: str, steamids: list, test_data: pd.DataFrame):
-    # first we need to get the name of the recommender system
-    start_time = time.time()
-    # before we run the recommender system, check if there's already results
-    if os.path.exists(os.path.join(result_path, recommender_name, "results.csv")):
-        print(f"Recommender system {recommender_name} already ran, skipping...")
-        return
-    print(f"Running recommender system {recommender_name}...")
-    # now we need to create a folder for the results of this recommender system
-    if not os.path.exists(os.path.join(result_path, recommender_name)):
-        os.mkdir(os.path.join(result_path, recommender_name))
-    # now we can run the recommender system, saving results to calculate precision and recall later
+def debug_calculate_unfinished_precision_and_recall(folder_name):
+    # first we need to get the results
     results_list = []
-    if isinstance(recommender_system, recommender.AbstractRecommenderSystem):
-        if paralellize_recommendations_mode == PROCESS_MODE:
-            futures = [process_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
-            for future in cf.as_completed(futures):
-                results_list.append(future.result())
-        elif paralellize_recommendations_mode == THREAD_MODE:
-            futures = [thread_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
-            for future in cf.as_completed(futures):
-                results_list.append(future.result())
-        elif paralellize_recommendations_mode == None:
-            for steamid in steamids:
-                results_list.append(recommend_user(recommender_system, recommender_name, steamid))
-    else:
-        raise ValueError("Recommender system is not an instance of AbstractRecommenderSystem")
-    finish_time = time.time() - start_time
-    with open(os.path.join(result_path, recommender_name, "time_in_seconds.txt"), "w") as f:
-        f.write(str(finish_time))
-    # now we can calculate precision and recall, comparing against the test data
+    test_data = pd.read_csv("data/player_games_test.csv")
+    for file in os.listdir(os.path.join(result_path, folder_name)):
+        if file.endswith("_results.csv"):
+            steamid = int(file.split("_")[0])
+            results = pd.read_csv(os.path.join(result_path, folder_name, file))
+            results_list.append((steamid, results))
+    calculate_precision_and_recall(folder_name, results_list, test_data)
+    return results_list
+
+
+def calculate_precision_and_recall(recommender_name, results_list, test_data):
     print(f"Calculating precision and recall for {recommender_name}...")
     # now we can calculate precision and recall
     precision = []
@@ -97,7 +80,7 @@ def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem,
     recall_at_12 = []  # steam only shows 12 games
     recall_at_20 = []
     
-    for steamid, results in results_list:  # TODO put this inside the loops above with a function to save RAM
+    for steamid, results in results_list:
         # first we need to get the test data for this user
         test_data_games = set(test_data[test_data["steamid"] == steamid]["appid"])
 
@@ -153,6 +136,39 @@ def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem,
         "recall_at_12": recall_at_12,
         "recall_at_20": recall_at_20
     }).to_csv(os.path.join(result_path, recommender_name, "results.csv"), index=False)
+
+def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem, recommender_name: str, steamids: list, test_data: pd.DataFrame):
+    # first we need to get the name of the recommender system
+    start_time = time.time()
+    # before we run the recommender system, check if there's already results
+    if os.path.exists(os.path.join(result_path, recommender_name, "results.csv")):
+        print(f"Recommender system {recommender_name} already ran, skipping...")
+        return
+    print(f"Running recommender system {recommender_name}...")
+    # now we need to create a folder for the results of this recommender system
+    if not os.path.exists(os.path.join(result_path, recommender_name)):
+        os.mkdir(os.path.join(result_path, recommender_name))
+    # now we can run the recommender system, saving results to calculate precision and recall later
+    results_list = []
+    if isinstance(recommender_system, recommender.AbstractRecommenderSystem):
+        if paralellize_recommendations_mode == PROCESS_MODE:
+            futures = [process_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
+            for future in cf.as_completed(futures):
+                results_list.append(future.result())
+        elif paralellize_recommendations_mode == THREAD_MODE:
+            futures = [thread_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
+            for future in cf.as_completed(futures):
+                results_list.append(future.result())
+        elif paralellize_recommendations_mode == None:
+            for steamid in steamids:
+                results_list.append(recommend_user(recommender_system, recommender_name, steamid))
+    else:
+        raise ValueError("Recommender system is not an instance of AbstractRecommenderSystem")
+    finish_time = time.time() - start_time
+    with open(os.path.join(result_path, recommender_name, "time_in_seconds.txt"), "w") as f:
+        f.write(str(finish_time))
+    # now we can calculate precision and recall, comparing against the test data
+    calculate_precision_and_recall(recommender_name, results_list, test_data)
     print(f"Recommender system {recommender_name} finished")
     del results_list
     del recommender_system  # TODO unsure if this works
@@ -187,7 +203,7 @@ game_categories = []
 game_genres = []
 game_tags = []
 
-def main(cull: int, interactive: bool, only_playtime: bool):
+def run_recommender_experiments(cull: int, interactive: bool, only_playtime: bool, nitpicked_steamids: bool):
     global recommender_combinations
     global player_games_playtimes
     # first check if the data/ folder exists
@@ -204,7 +220,7 @@ def main(cull: int, interactive: bool, only_playtime: bool):
     test_data = pd.read_csv("data/player_games_test.csv")
     print("Data loaded. Loading normalization classes and similarity classes...")
     # now get all the normalization classes
-    normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer]
+    normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer and cls != normalization.NoNormalization]
     # now get all the similarities, separated by game_similarities and user_similarities
     # similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractSimilarity)]
     game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
@@ -216,7 +232,7 @@ def main(cull: int, interactive: bool, only_playtime: bool):
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.5, 0.75, 0.825]
+    player_games_minhash_thresholds = [0.6, 0.75]
     pg_relevant_thresholds = [0.6, 0.75, 0.9]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
@@ -307,9 +323,13 @@ def main(cull: int, interactive: bool, only_playtime: bool):
     if not os.path.exists(result_path):
         os.mkdir(result_path)
     # but get the steamids first
-    steamids = test_data["steamid"].unique()
-    if cull > 0:
-        steamids = steamids[:cull]
+    if nitpicked_steamids:
+        import pickle
+        steamids = pickle.load(open("data/nitpicked_steamids.pickle", "rb"))
+    else:
+        steamids = test_data["steamid"].unique()
+        if cull > 0:
+            steamids = steamids[:cull]
     # now we can run the experiments
     for recommender_system in recommender_combinations:
         recommender_name = repr(recommender_system)
@@ -317,11 +337,12 @@ def main(cull: int, interactive: bool, only_playtime: bool):
     
     print("Finished running all recommender systems. Calculating average precision and recall, and plotting...")
 
-
+results_for_rec = {}
 def plot_results():
+    global final_results, results_for_rec
     # now we can calculate the average precision and recall for each recommender system
     # first we need to get the names of the recommender systems
-    recommender_names = subfolders = [ f.path for f in os.scandir(result_path) if f.is_dir() ]
+    recommender_names = [ f.path for f in os.scandir(result_path) if f.is_dir() ]
     recommender_names = [recommender_name.split("/")[-1] for recommender_name in recommender_names]
     # now we can calculate the average precision and recall
     average_precision = []
@@ -338,6 +359,7 @@ def plot_results():
         # first we need to get the results
         try:
             results = pd.read_csv(os.path.join(result_path, recommender_name, "results.csv"))
+            results_for_rec[recommender_name] = results
             # now we can calculate the average precision and recall
             average_precision.append(results["precision"].mean())
             average_precision_at_5.append(results["precision_at_5"].mean())
@@ -397,7 +419,51 @@ def plot_results():
     ax[1].set_ylabel("Recall")
     ax[1].legend()
     fig.savefig(os.path.join(result_path, "results.png"))
-    fig.show()
+    # fig.show()
+
+topN_steamid = []
+def find_topN_from_results(res_dict, N=200, K=2.5):
+    # debugging purposes and to take the "top" users
+    global topN_steamid
+    topkN_per_rec = {}
+    kN = int(np.floor(K*N))
+    for recommender_name, results in res_dict.items():
+        # order the results by the precision
+        results = results.sort_values(by="precision", ascending=False)
+        # get the top N*K
+        res_kn = results.head(kN)
+        # first check if any's precision is 0
+        if res_kn["precision"].min() == 0:
+            print(f"WARNING: Recommender system {recommender_name} has a precision of 0 in the top {kN} results. Filtering out those users...")
+            res_kn = res_kn[res_kn["precision"] > 0]
+        more_than_0 = res_kn["steamid"].tolist()
+        if len(more_than_0) < N:
+            print(f"WARNING: Recommender system {recommender_name} has {len(more_than_0)} results, less than N={N}. Skipping this recommender system...")
+            continue
+        topkN_per_rec[recommender_name] = more_than_0
+        print(f"Found {len(more_than_0)} users with more than 0 precission for recommender system {recommender_name}.")
+    # now we can find the top N
+    topN_steamid = list(set.intersection(*map(set, topkN_per_rec.values())))
+    if len(topN_steamid) < N:
+        print(f"WARNING: Found less than {N} 'colliding' users... Edit the code to find more users.")
+    elif len(topN_steamid) > N:
+        print(f"GOOD SIGN: Found more than {N} 'colliding' users... Filtering based on how many times they appear in the top {kN} of the recommender systems.")
+        # now we need to filter the topN_steamid list
+        # we will count how many times each user appears in the top kN of the recommender systems
+        # and then we will filter the topN_steamid list based on that
+        # we will use a dict to count the number of times each user appears in any topkN_per_rec
+        user_count = {}
+        for recommender_name, topkN in topkN_per_rec.items():
+            for user in topkN:
+                if user in user_count:
+                    user_count[user] += 1
+                else:
+                    user_count[user] = 1
+        # now we can filter the topN_steamid list
+        sorted_user_count = sorted(user_count.items(), key=lambda x: x[1], reverse=True)
+        topN_steamid = [user[0] for user in sorted_user_count[:N]]
+    print(f"Found top {len(topN_steamid)} users from the results of the recommender systems. Stored in topN_steamid.")
+    
 
 if __name__ == "__main__":
     try:
@@ -408,17 +474,26 @@ if __name__ == "__main__":
         parser.add_argument("--skip_plot", action="store_true", help="Skip plotting the results")
         parser.add_argument("--cull", type=int, default=-1, help="Cull the users to test. Mostly debugging purposes.")
         parser.add_argument("-pt","--only_playtime", action="store_true", help="Only compute playtime, useful when done with the Content Based recommender systems.")
+        parser.add_argument("-np","--use_nitpicked_steamids", action="store_true", help="Use the nitpicked steamids instead of the topN_steamid list. Useful for debugging purposes.")
         # parser.add_argument("--interactive", action="store_true", help="Run the program in interactive mode. Mostly for debugging purposes.")
         parser.add_argument("-i", "--interactive", action="store_true", help="Run the program in interactive mode. Mostly for debugging purposes.")
         args = parser.parse_args()
         if args.skip_rec:
             print("Skipping running recommender systems...")
         else:
-            main(args.cull, args.interactive, args.only_playtime)
+            run_recommender_experiments(args.cull, args.interactive, args.only_playtime, args.use_nitpicked_steamids)
         if args.skip_plot:
             print("Skipping plotting results...")
         else:
             plot_results()
+            # used for debugging purposes
+            if args.interactive:
+                # note: if we tried to get them from anything other than 'GameTag' recommender similarities,
+                # we'd have 7 users with a precission higher than 0 in all recommender systems
+                # we're using this one to find potential users to test with Playtime recommender systems, 
+                # and we want to have a subset that doesn't yield 0 results for some users after hours of computation
+                game_tag_res = {key: item for key, item in results_for_rec.items() if "GameTag" in key}
+                find_topN_from_results(game_tag_res, N=250, K=3)
     except KeyboardInterrupt:
         print("**************\nKeyboardInterrupt detected. Stopping executor...\n**************")
         process_executor.shutdown(wait=False, cancel_futures=True)

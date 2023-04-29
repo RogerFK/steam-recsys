@@ -118,8 +118,8 @@ class RootPlaytimeNormalizer(AbstractPlaytimeNormalizer):
     def __repr__(self) -> str:
         return super().__repr__() + f"_{self.nroot}root"
 
-class CubicRootPlaytimeNormalizer(RootPlaytimeNormalizer):
-    """Used for experiments.py. Normalizes the player_games data using the cubic root of the playtime_forever
-    """
-    def __init__(self, denominator_function: str = "sum_max", playtime_approach: str = "minutes_always_more_than_60", output_multiplier: int = 5, inplace: bool = False):
-        super().__init__(denominator_function, playtime_approach, 3, output_multiplier, inplace)
+# class CubicRootPlaytimeNormalizer(RootPlaytimeNormalizer):
+#     """Used for experiments.py. Normalizes the player_games data using the cubic root of the playtime_forever
+#     """
+#     def __init__(self, denominator_function: str = "sum_max", playtime_approach: str = "minutes_always_more_than_60", output_multiplier: int = 5, inplace: bool = False):
+#         super().__init__(denominator_function, playtime_approach, 3, output_multiplier, inplace)

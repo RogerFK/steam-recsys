@@ -23,6 +23,13 @@ import gc as garbage_collector
 # If the data isn't there, we will split the data and save it to the data/ folder using the default values.
 import split_train_test
 
+import logging
+import datetime
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s",
+                    filename=f"output {datetime.datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.log", filemode='w'
+                    )
+
 
 # change BIN_DATA_PATH to "bin_data_test" to avoid conflicts
 recommender.BIN_DATA_PATH = "experiments/bin_data/"
@@ -209,8 +216,8 @@ def main(cull: int, interactive: bool, only_playtime: bool):
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.5, 0.625, 0.75, 0.8]
-    pg_relevant_thresholds = [0.6, 0.75]
+    player_games_minhash_thresholds = [0.5, 0.75, 0.825]
+    pg_relevant_thresholds = [0.6, 0.75, 0.9]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:

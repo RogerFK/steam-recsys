@@ -194,7 +194,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             self.lshensemble = self.processed_data["lshensemble"]
         self.norm_file = f"{playtime_normalizer}_{((filename.split('/')[-1].split('.')[0]) if not isinstance(filename, pd.DataFrame) else 'PGPT')}"
         self.norm_path = f"{BIN_DATA_PATH}/PGPTData/{self.norm_file}.pickle"
-        atexit.register(self.dump_data)
+        # atexit.register(self.dump_data)
         if os.path.exists(self.norm_path):
             logging.info("Loading normalized data...")
             if self.norm_file in GLOBAL_CACHE:
@@ -1444,20 +1444,16 @@ class RawUserSimilarity(AbstractSimilarity):
         # check if pgdata is set
         # if self.pgdata is None:
         #     raise ValueError("pgdata must be set to use this similarity function")
-        if self._own_games_played is None:
-            own_games_played = self.pgdata.get_user_games(steamid)
-            self._own_games_played = own_games_played
-        else:
-            own_games_played = self._own_games_played
+        own_games_played = self.pgdata.get_user_games(steamid) if self._own_games_played is None else self._own_games_played
         # own_games_played = self.pgdata.get_user_games(steamid)
         own_game_count = len(own_games_played)
         other_games_played = self.pgdata.get_user_games(other)
         
         # we only want to compare the games that both users have played
-        own_games_played = own_games_played.loc[own_games_played["appid"].isin(other_games_played["appid"])]
+        games_to_compare = own_games_played.loc[own_games_played["appid"].isin(other_games_played["appid"])]
         
         total_score = 0
-        for idx, row in own_games_played.iterrows():
+        for idx, row in games_to_compare.iterrows():
             _, appid, own_pseudorating = row
             if own_pseudorating > 0:
                 total_score += self.pgdata.rating(other, appid) * own_pseudorating
@@ -1500,7 +1496,8 @@ class RawUserSimilarity(AbstractSimilarity):
         list: A list of tuples (steamid, similarity)
         """
         rough_similar_users = self.pgdata.get_lsh_similar_users(steamid)
-        
+
+        self._own_games_played = self.pgdata.get_user_games(steamid)
         logging.info(f"Finding {n} similar users to {steamid}. Please wait...")
         priority_queue = PriorityQueue(n + 1)
         if self.parallelize:
@@ -1562,7 +1559,7 @@ class CosineUserSimilarity(RawUserSimilarity):
                 self.save_norms_if_dirty()
         else:
             self.norms = {}
-        atexit.register(self.save_norms_if_dirty)
+        # atexit.register(self.save_norms_if_dirty)
     
     def load_norms(self):
         if self.user_norms_file in GLOBAL_CACHE:
@@ -1610,16 +1607,13 @@ class CosineUserSimilarity(RawUserSimilarity):
         if self.precomputed:
             selfnorm = self.get_user_norm(steamid)
             othernorm = self.get_user_norm(other)
-            return super().similarity(steamid, other) / ((selfnorm * othernorm) ** 0.5)
+            game_count = len(self._own_games_played if self._own_games_played is not None else self.pgdata.get_user_games(steamid))
+            return (super().similarity(steamid, other) * game_count) / ((selfnorm * othernorm) ** 0.5)
         # check if pgdata is set
         if self.pgdata is None:
             raise ValueError("pgdata must be set to use this similarity function")
 
-        if self._own_games_played is None:
-            own_games_played = self.pgdata.get_user_games(steamid)
-            self._own_games_played = own_games_played
-        else:
-            own_games_played = self._own_games_played
+        own_games_played = self.pgdata.get_user_games(steamid) if self._own_games_played is None else self._own_games_played
         other_games_played = self.pgdata.get_user_games(other)
         
         games_to_iterate = own_games_played.join(other_games_played)
@@ -1683,13 +1677,14 @@ class PearsonUserSimilarity(RawUserSimilarity):
             with open(self.processed_data_filename, "wb") as f:
                 pickle.dump(self.processed_data, f)
             GLOBAL_CACHE[self.processed_data_name] = self.processed_data
-        atexit.register(self.save_processed_data_if_dirty)
+        # atexit.register(self.save_processed_data_if_dirty)
     
     def save_processed_data_if_dirty(self):
         if self.dirty:
             with open(f"{BIN_DATA_PATH}/pearson/{self.pgdata.norm_file}.pickle", "wb") as f:
                 pickle.dump(self.processed_data, f)
             GLOBAL_CACHE[self.processed_data_name] = self.processed_data
+            self.dirty = False
 
     def get_user_mean_denominator(self, steamid: int) -> Tuple[float, float]:
         if steamid in self.user_mean:
@@ -1721,11 +1716,8 @@ class PearsonUserSimilarity(RawUserSimilarity):
         if self.pgdata is None:
             raise ValueError("pgdata must be set to use this similarity function")
 
-        if self._own_games_played is None:
-            own_games_played = self.pgdata.get_user_games(steamid)
-            self._own_games_played = own_games_played
-        else:
-            own_games_played = self._own_games_played
+        own_games_played = self.pgdata.get_user_games(steamid) if self._own_games_played is None else self._own_games_played
+        
         other_games_played = self.pgdata.get_user_games(other)
         
         games_to_iterate = own_games_played.join(other_games_played, on="appid", how="outer", lsuffix="_left", rsuffix="_right").drop(columns=["steamid_left", "steamid_right"])

@@ -4,6 +4,12 @@ from recommender import *
 import pandas as pd
 from normalization import *
 import time
+import logging
+import datetime
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s",
+                    #filename=f"output {datetime.datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.log", filemode='w'
+                    )
 
 # variables
 steamid = 76561197960269908
@@ -20,14 +26,20 @@ game_info = GameInfo(game_details, game_categories, game_developers, game_publis
 # recommender systems and similarity objects
 rand = RandomRecommenderSystem()
 pgdata = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
+pgdata_lowrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0, minhash_threshold=0.6)
+pgdata_highrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0.75, minhash_threshold=0.5)
 pgdata_lowthres = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), minhash_threshold=0.2)
 # pgdata_train = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
-user_sim = CosineUserSimilarity(pgdata, parallel=False)
+user_sim = CosineUserSimilarity(pgdata, parallel=True)
 user_sim_lowthres = CosineUserSimilarity(pgdata_lowthres, parallel=True)
-user_sim_lowthres_st = CosineUserSimilarity(pgdata_lowthres, parallel=False)
+user_sim_lowthres_st = CosineUserSimilarity(pgdata_lowthres, parallel=True)
+user_sim_lowrele = CosineUserSimilarity(pgdata_lowrele, parallel=True)
+user_sim_highrele = CosineUserSimilarity(pgdata_highrele, parallel=True)
 pbr = PlaytimeBasedRecommenderSystem(pgdata, user_sim)
 pbr_lowthres = PlaytimeBasedRecommenderSystem(pgdata_lowthres, user_sim_lowthres)
 pbr_lowthres_st = PlaytimeBasedRecommenderSystem(pgdata_lowthres, user_sim_lowthres_st)
+pbr_lowrele = PlaytimeBasedRecommenderSystem(pgdata_lowrele, user_sim_lowrele)
+pbr_highrele = PlaytimeBasedRecommenderSystem(pgdata_highrele, user_sim_highrele)
 tag_sim = CosineGameTagSimilarity(game_tags)
 tbr = ContentBasedRecommenderSystem(pgdata, tag_sim, 0.0)
 gdet_sim = GameDetailsSimilarity(game_details)
@@ -48,10 +60,7 @@ print("pbr.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() 
 # start_time = time.time()
 # pbr_lowthres_recommendations = pbr_lowthres.recommend(steamid, n=10, n_users=40)
 # print("pbr_lowthres.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
-# start_time = time.time()
-# pbr_lowthres_st_recommendations = pbr_lowthres_st.recommend(steamid, n=10, n_users=40)
-# print("pbr_lowthres_st.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
-# start_time = time.time()
+start_time = time.time()
 tbr_recommendations = tbr.recommend(steamid, n=50)
 cbr_recommendations = cbr.recommend(steamid, n=50)
 
@@ -64,3 +73,5 @@ print("If you're not seeing a shell, you need to run this with python -i recomme
 # n_testpbr=10000; pbr_rec1 = pbr.recommend(steamid, n=n_testpbr, n_users=50); pbr_rec2 = pbr.recommend(steamid, n=n_testpbr, n_users=5000); pbr_rec2.index == pbr_rec1.index
 
 # n_NN = 50; pb1 = pbr.recommend(steamid, 100, n_NN); pb2 = pbr_lowthres.recommend(steamid, 100, n_NN); pb1; pb2; "Same but not in same order: " + str(len([app in pb2.index for app in pb1.index if app in pb2.index])); "Same in same order: " + str(len([res for res in pb1.index == pb2.index if res]))
+# start_time = time.time(); pbr_lowrele_recommendations = pbr_lowrele.recommend(steamid, n=10, n_users=40); print("pbr_lowrele.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
+# start_time = time.time(); pbr_highrele_recommendations = pbr_highrele.recommend(steamid, n=10, n_users=40); print("pbr_highrele.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))

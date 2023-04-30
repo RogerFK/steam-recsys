@@ -493,7 +493,7 @@ if __name__ == "__main__":
                 # we're using this one to find potential users to test with Playtime recommender systems, 
                 # and we want to have a subset that doesn't yield 0 results for some users after hours of computation
                 game_tag_res = {key: item for key, item in results_for_rec.items() if "GameTag" in key}
-                find_topN_from_results(game_tag_res, N=250, K=3)
+                find_topN_from_results(game_tag_res, N=100, K=4)
     except KeyboardInterrupt:
         print("**************\nKeyboardInterrupt detected. Stopping executor...\n**************")
         process_executor.shutdown(wait=False, cancel_futures=True)

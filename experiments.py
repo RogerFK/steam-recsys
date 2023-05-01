@@ -233,7 +233,7 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
     player_games_minhash_thresholds = [0.6, 0.75]
-    pg_relevant_thresholds = [0.6, 0.75, 0.9]
+    pg_relevant_thresholds = [0.6, 0.8]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:

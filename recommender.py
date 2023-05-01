@@ -184,7 +184,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
         if not os.path.exists(f"{BIN_DATA_PATH}/PGPTData"):
             os.makedirs(f"{BIN_DATA_PATH}/PGPTData")
         self.pickle_name = self.pickle_name_fmt.format(f"{minhash_threshold:.2f}", f"{relevant_threshold:.2f}", num_perm, num_part)
-        self.repr_name = f"PlayerGamesPlaytime({playtime_normalizer}, {minhash_threshold:.2f}, {num_perm}, {num_part})"
+        self.repr_name = f"PlayerGamesPlaytime({playtime_normalizer}, rel_{relevant_threshold:.2f}, lsh_{minhash_threshold:.2f}, {num_perm}, {num_part})"
         self.global_minhash_filename = f"{BIN_DATA_PATH}/minhashes/pgpt{relevant_threshold}.pickle"
         super().__init__(filename, self.pickle_name, minhash_threshold)  # load the processed data if it exists
         self.playtime_normalizer = playtime_normalizer

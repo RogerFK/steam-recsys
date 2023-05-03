@@ -26,16 +26,27 @@ game_info = GameInfo(game_details, game_categories, game_developers, game_publis
 # recommender systems and similarity objects
 rand = RandomRecommenderSystem()
 pgdata = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
-pgdata_lowrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0, minhash_threshold=0.6)
-pgdata_highrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0.75, minhash_threshold=0.5)
-pgdata_lowthres = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), minhash_threshold=0.2)
+load_more_pgdatas = False
+if load_more_pgdatas is None:
+    load_more_pgdatas = input("Load more pgdatas? (y/n) ")
+    load_more_pgdatas = load_more_pgdatas == 'y'
+if load_more_pgdatas:
+    pgdata_lowrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0, minhash_threshold=0.6)
+    pgdata_highrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0.75, minhash_threshold=0.5)
+    pgdata_lowthres = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), minhash_threshold=0.2)
+else:
+    pgdata_lowrele = pgdata
+    pgdata_highrele = pgdata
+    pgdata_lowthres = pgdata
 # pgdata_train = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
 user_sim = CosineUserSimilarity(pgdata, parallel=True)
+user_sim_st = CosineUserSimilarity(pgdata, parallel=False)
 user_sim_lowthres = CosineUserSimilarity(pgdata_lowthres, parallel=True)
-user_sim_lowthres_st = CosineUserSimilarity(pgdata_lowthres, parallel=True)
+user_sim_lowthres_st = CosineUserSimilarity(pgdata_lowthres, parallel=False)
 user_sim_lowrele = CosineUserSimilarity(pgdata_lowrele, parallel=True)
 user_sim_highrele = CosineUserSimilarity(pgdata_highrele, parallel=True)
 pbr = PlaytimeBasedRecommenderSystem(pgdata, user_sim)
+pbr_st = PlaytimeBasedRecommenderSystem(pgdata, user_sim_st)
 pbr_lowthres = PlaytimeBasedRecommenderSystem(pgdata_lowthres, user_sim_lowthres)
 pbr_lowthres_st = PlaytimeBasedRecommenderSystem(pgdata_lowthres, user_sim_lowthres_st)
 pbr_lowrele = PlaytimeBasedRecommenderSystem(pgdata_lowrele, user_sim_lowrele)
@@ -55,7 +66,7 @@ gpub_rec = ContentBasedRecommenderSystem(pgdata, gpub_sim)
 cbr = HybridRecommenderSystem(pgdata, (pbr, 3), (tbr, 3), (gdet_rec, 1), (gdev_rec, 1), (gpub_rec, 0.5), (ggen_rec, 0.2), (gcat_rec, 0.5))
 
 start_time = time.time()
-pbr_recommendations = pbr.recommend(steamid, n=10, n_users=40)
+pbr_recommendations = pbr.recommend(steamid, n=10, n_users=50, filter_owned=False)
 print("pbr.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
 # start_time = time.time()
 # pbr_lowthres_recommendations = pbr_lowthres.recommend(steamid, n=10, n_users=40)

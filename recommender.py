@@ -25,6 +25,9 @@ def trivial_hash(x):
 BIN_DATA_PATH = "bin_data"
 GLOBAL_CACHE = {}  # used mainly to not run out of RAM in experiments.py
 
+GLOBAL_THREAD_EXECUTOR = cf.ThreadPoolExecutor()
+atexit.register(GLOBAL_THREAD_EXECUTOR.shutdown)
+
 class AbstractRecommenderData(ABC):
     
     def __init__(self, csv_filename: Union[str, DataFrame], pickle_filename: str = None, threshold: int = 0):
@@ -1501,17 +1504,16 @@ class RawUserSimilarity(AbstractSimilarity):
         logging.info(f"Finding {n} similar users to {steamid}. Please wait...")
         priority_queue = PriorityQueue(n + 1)
         if self.parallelize:
-            with cf.ThreadPoolExecutor() as executor:
-                futures = []
-                for similar_user in rough_similar_users:
-                    if similar_user == steamid:
-                        continue
-                    futures.append(executor.submit(self.similarity, steamid, similar_user))
-                for future in cf.as_completed(futures):
-                    similarity = future.result()
-                    priority_queue.put((similarity, similar_user))
-                    if priority_queue.qsize() > n:
-                        _ = priority_queue.get()
+            futures = []
+            for similar_user in rough_similar_users:
+                if similar_user == steamid:
+                    continue
+                futures.append(GLOBAL_THREAD_EXECUTOR.submit(self.similarity, steamid, similar_user))
+            for future in cf.as_completed(futures):
+                similarity = future.result()
+                priority_queue.put((similarity, similar_user))
+                if priority_queue.qsize() > n:
+                    _ = priority_queue.get()
             # use joblib instead
             # rough_similar_users = list(rough_similar_users)
             # print("Got " + str(len(rough_similar_users)) + " similar users. Parallelizing...")
@@ -2496,7 +2498,7 @@ class AbstractRecommenderSystem(ABC):
         # get the top n games
         #if n == -1:
         results = games if not filter_owned \
-            else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)}
+            else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)["appid"].values}
         #else:
         #    results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else {k: v for k, v in list(games.items())[:n]}
         

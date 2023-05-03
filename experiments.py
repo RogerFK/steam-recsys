@@ -13,7 +13,6 @@ import recommender
 
 import matplotlib.pyplot as plt
 
-import concurrent.futures as cf
 import signal
 
 import gc as garbage_collector
@@ -42,7 +41,7 @@ def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, re
     results_file = os.path.join(result_path, recommender_name, f"{steamid}_results.csv")
     if os.path.exists(results_file):
         return (steamid, pd.read_csv(results_file))
-    results = recommender_system.recommend(steamid, n=50, filter_owned=True)
+    results = recommender_system.recommend(steamid, n=50, filter_owned=False)
     # results_list.append((steamid, results))
     # store the results, which are a DataFrame (or if they're a list of tuples, we can convert it to a DataFrame)
     if not os.path.exists(os.path.join(result_path, recommender_name)):
@@ -53,7 +52,7 @@ def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, re
     print(f"Recommender system {recommender_name} finished for steamid {steamid}")
     return (steamid, results)
 
-def debug_calculate_unfinished_precision_and_recall(folder_name):
+def calculate_full_precision_and_recall(folder_name, from_incomplete=False):
     # first we need to get the results
     results_list = []
     test_data = pd.read_csv("data/player_games_test.csv")
@@ -62,12 +61,16 @@ def debug_calculate_unfinished_precision_and_recall(folder_name):
             steamid = int(file.split("_")[0])
             results = pd.read_csv(os.path.join(result_path, folder_name, file))
             results_list.append((steamid, results))
-    calculate_precision_and_recall(folder_name, results_list, test_data)
+    if not from_incomplete:
+        calculate_precision_and_recall(folder_name, results_list, test_data, ignore_incomplete=True)
     return results_list
 
 
-def calculate_precision_and_recall(recommender_name, results_list, test_data):
+def calculate_precision_and_recall(recommender_name, results_list, test_data, ignore_incomplete=False):
     print(f"Calculating precision and recall for {recommender_name}...")
+    if not ignore_incomplete and len(results_list) <= 100:
+        print(f"Warning: {recommender_name} has less than 100 results, fully recomputing")
+        results_list = calculate_full_precision_and_recall(recommender_name, from_incomplete=True)
     # now we can calculate precision and recall
     precision = []
     precision_at_5 = []
@@ -151,15 +154,15 @@ def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem,
     # now we can run the recommender system, saving results to calculate precision and recall later
     results_list = []
     if isinstance(recommender_system, recommender.AbstractRecommenderSystem):
-        if paralellize_recommendations_mode == PROCESS_MODE:
-            futures = [process_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
-            for future in cf.as_completed(futures):
-                results_list.append(future.result())
-        elif paralellize_recommendations_mode == THREAD_MODE:
-            futures = [thread_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
-            for future in cf.as_completed(futures):
-                results_list.append(future.result())
-        elif paralellize_recommendations_mode == None:
+        # if paralellize_recommendations_mode == PROCESS_MODE:
+        #     futures = [process_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
+        #     for future in cf.as_completed(futures):
+        #         results_list.append(future.result())
+        # elif paralellize_recommendations_mode == THREAD_MODE:
+        #     futures = [thread_executor.submit(recommend_user, recommender_system, recommender_name, steamid) for steamid in steamids]
+        #     for future in cf.as_completed(futures):
+        #         results_list.append(future.result())
+        # elif paralellize_recommendations_mode == None:
             for steamid in steamids:
                 results_list.append(recommend_user(recommender_system, recommender_name, steamid))
     else:
@@ -173,9 +176,6 @@ def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem,
     del results_list
     del recommender_system  # TODO unsure if this works
     garbage_collector.collect()
-
-process_executor = cf.ProcessPoolExecutor(6)
-thread_executor = cf.ThreadPoolExecutor()
 
 def handler(signum, frame):
     # print("Cancelling everything...")
@@ -232,8 +232,8 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.6, 0.75]
-    pg_relevant_thresholds = [0.6, 0.8]
+    player_games_minhash_thresholds = [0.6, 0.8]
+    pg_relevant_thresholds = [0.8]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:
@@ -249,7 +249,7 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # also doing this programatically is harder than doing it by hand, I just took this from recommender_shell.py
     if not only_playtime:
         print("Instantiating basic Recommender Data classes...")
-        game_similarity_thresholds = np.append(np.linspace(0.3, 0.8, 5), [1, 1.01])  # threshold 1 means linear search / other methods will be used
+        game_similarity_thresholds = np.append(np.linspace(0.3, 0.8, 5), [1, 1.01])  # threshold >1 means linear search / other methods will be used
         # game_details = recommender.GameDetails('data/game_details.csv')  # this one is global
         game_details = None
         game_developers = recommender.GameDevelopers('data/game_developers_empty.csv')
@@ -496,6 +496,6 @@ if __name__ == "__main__":
                 find_topN_from_results(game_tag_res, N=100, K=4)
     except KeyboardInterrupt:
         print("**************\nKeyboardInterrupt detected. Stopping executor...\n**************")
-        process_executor.shutdown(wait=False, cancel_futures=True)
+        # process_executor.shutdown(wait=False, cancel_futures=True)
         print("Executor stopped. Exiting gracefully...")
         sys.exit(0)

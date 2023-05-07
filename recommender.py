@@ -1482,8 +1482,11 @@ class RawUserSimilarity(AbstractSimilarity):
                                  dtype=object)
         # reorder the columns
         sim_users = sim_users[["steamid", "similarity"]]
+        maximum = sim_users["similarity"].max()
+        if maximum == 0:
+            return sim_users
         # normalize the similarities
-        sim_users["similarity"] = sim_users["similarity"] / sim_users["similarity"].max() * sim_users["similarity"].min()
+        sim_users["similarity"] = sim_users["similarity"] / maximum * sim_users["similarity"].min()
         return sim_users
     def get_similar_users(self, steamid: int, n: int = 10) -> DataFrame:
         """Gets n top similar users to a user. Specially useful for collaborative filtering.

@@ -68,7 +68,7 @@ def calculate_full_precision_and_recall(folder_name, from_incomplete=False):
 
 def calculate_precision_and_recall(recommender_name, results_list, test_data, ignore_incomplete=False):
     print(f"Calculating precision and recall for {recommender_name}...")
-    if not ignore_incomplete and len(results_list) <= 100:
+    if not ignore_incomplete and len(results_list) < 100:
         print(f"Warning: {recommender_name} has less than 100 results, fully recomputing")
         results_list = calculate_full_precision_and_recall(recommender_name, from_incomplete=True)
     # now we can calculate precision and recall
@@ -226,14 +226,14 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
     game_tag_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawGameTagSimilarity)]
     
-    user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity) and not isinstance(sim, recommender.CosineUserSimilarity)]
+    user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
     print("Normalization classes and similarity classes loaded.\nInstantiating player game data with different playtime normalizers. This might take very long...")
     # now we want to mix recommender.PlayerGamesPlaytime with every normalization class with thresholds from 0.1 to 0.9
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.6]
-    pg_relevant_thresholds = [0.8]
+    player_games_minhash_thresholds = [0.6, 0.8]
+    pg_relevant_thresholds = [0.6, 0.8]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:

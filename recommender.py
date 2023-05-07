@@ -1453,13 +1453,12 @@ class RawUserSimilarity(AbstractSimilarity):
         other_games_played = self.pgdata.get_user_games(other)
         
         # we only want to compare the games that both users have played
-        games_to_compare = own_games_played.loc[own_games_played["appid"].isin(other_games_played["appid"])]
+        games_to_iterate = own_games_played.join(other_games_played, on="appid", how="inner", lsuffix="_left", rsuffix="_right").drop(columns=["steamid_left", "steamid_right"])
         
         total_score = 0
-        for idx, row in games_to_compare.iterrows():
-            _, appid, own_pseudorating = row
-            if own_pseudorating > 0:
-                total_score += self.pgdata.rating(other, appid) * own_pseudorating
+        for idx, row in games_to_iterate.iterrows():
+            _, _, own_pseudorating, _, other_pseudorating = row
+            total_score += own_pseudorating * other_pseudorating
         # raw score, but don't penalize for having more games
         # we divide by len since it's a constant (it doesn't influence the results) and prevents overflowing
         return total_score / own_game_count

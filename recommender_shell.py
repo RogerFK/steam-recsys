@@ -26,6 +26,7 @@ game_info = GameInfo(game_details, game_categories, game_developers, game_publis
 # recommender systems and similarity objects
 rand = RandomRecommenderSystem()
 pgdata = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
+pgdata_lin = PlayerGamesPlaytime('data/player_games_train.csv', LinearPlaytimeNormalizer('sum_max', inplace=True))
 load_more_pgdatas = False
 if load_more_pgdatas is None:
     load_more_pgdatas = input("Load more pgdatas? (y/n) ")
@@ -86,3 +87,5 @@ print("If you're not seeing a shell, you need to run this with python -i recomme
 # n_NN = 50; pb1 = pbr.recommend(steamid, 100, n_NN); pb2 = pbr_lowthres.recommend(steamid, 100, n_NN); pb1; pb2; "Same but not in same order: " + str(len([app in pb2.index for app in pb1.index if app in pb2.index])); "Same in same order: " + str(len([res for res in pb1.index == pb2.index if res]))
 # start_time = time.time(); pbr_lowrele_recommendations = pbr_lowrele.recommend(steamid, n=10, n_users=40); print("pbr_lowrele.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
 # start_time = time.time(); pbr_highrele_recommendations = pbr_highrele.recommend(steamid, n=10, n_users=40); print("pbr_highrele.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
+
+# 76561197960365067 76561197960384059

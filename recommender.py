@@ -1488,6 +1488,42 @@ class RawUserSimilarity(AbstractSimilarity):
         # normalize the similarities
         sim_users["similarity"] = sim_users["similarity"] / maximum * sim_users["similarity"].min()
         return sim_users
+    
+    def similarity_batch(self, steamid: int, others: List[int]) -> List[Tuple[int, float]]:
+        """Computes the similarity between a user and a list of other users. Useful for parallelization.
+
+        Args:
+        ---
+        steamid (int): The steamid of the user
+        others (List[int]): The list of steamids of the users to compare to
+
+        Returns:
+        ---
+        List[Tuple[int, float]]: The list of tuples (steamid, similarity)
+        """
+        similar_users = []
+        for other in others:
+            if other == steamid:
+                continue
+            similarity = self.similarity(steamid, other)
+            similar_users.append((other, similarity))
+        return similar_users
+    
+    def chunks(self, l: List, n: int) -> List[List]:
+        """Yield successive n-sized chunks from l.
+
+        Args:
+        ---
+        l (List): The list to chunk
+        n (int): The size of the chunks
+
+        Yields:
+        ---
+        List: The chunks
+        """
+        for i in range(0, len(l), n):
+            yield l[i:i + n]
+
     def get_similar_users(self, steamid: int, n: int = 10) -> DataFrame:
         """Gets n top similar users to a user. Specially useful for collaborative filtering.
 
@@ -1507,25 +1543,17 @@ class RawUserSimilarity(AbstractSimilarity):
         priority_queue = PriorityQueue(n + 1)
         if self.parallelize:
             futures = []
-            for similar_user in rough_similar_users:
-                if similar_user == steamid:
-                    continue
-                futures.append(GLOBAL_THREAD_EXECUTOR.submit(self.similarity, steamid, similar_user))
+            max_workers = GLOBAL_THREAD_EXECUTOR._max_workers
+            rough_similar_users = list(rough_similar_users)
+            count_per_worker = len(rough_similar_users) / max_workers
+            for batch in self.chunks(rough_similar_users, int(count_per_worker)):
+                futures.append(GLOBAL_THREAD_EXECUTOR.submit(self.similarity_batch, steamid, batch))
             for future in cf.as_completed(futures):
-                similarity = future.result()
-                priority_queue.put((similarity, similar_user))
-                if priority_queue.qsize() > n:
-                    _ = priority_queue.get()
-            # use joblib instead
-            # rough_similar_users = list(rough_similar_users)
-            # print("Got " + str(len(rough_similar_users)) + " similar users. Parallelizing...")
-            # similarities = Parallel(n_jobs=-1)(delayed(self.similarity)(steamid, similar_user) for similar_user in rough_similar_users)
-            # for i, similar_user in enumerate(rough_similar_users):
-            #     if similar_user == steamid:
-            #         continue
-            #     priority_queue.put((similarities[i], similar_user))
-            #     if priority_queue.qsize() > n:
-            #         _ = priority_queue.get()
+                similar_users = future.result()
+                for similarity in similar_users:
+                    priority_queue.put(similarity)
+                    if priority_queue.qsize() > n:
+                        _ = priority_queue.get()
         else:
             for similar_user in rough_similar_users:
                 if similar_user == steamid:
@@ -2635,7 +2663,7 @@ class PlaytimeBasedRecommenderSystem(AbstractRecommenderSystem):
         self.similarity = similarity
         self.score_results_for_n_users = {}
     
-    def recommend(self, steamid: int, n: int = 10, n_users = 50, filter_owned=True) -> DataFrame:
+    def recommend(self, steamid: int, n: int = 10, n_users = 150, filter_owned=True) -> DataFrame:
         """
         Description
         ---

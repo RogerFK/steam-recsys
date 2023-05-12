@@ -52,21 +52,28 @@ def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, re
     print(f"Recommender system {recommender_name} finished for steamid {steamid}")
     return (steamid, results)
 
-def calculate_full_precision_and_recall(folder_name, from_incomplete=False):
+def calculate_full_precision_and_recall(folder_name, from_incomplete=False, nitpicked_steamids_list=None, filter_owned=False):
     # first we need to get the results
+    global train_data
     results_list = []
     test_data = pd.read_csv("data/player_games_test.csv")
     for file in os.listdir(os.path.join(result_path, folder_name)):
-        if file.endswith("_results.csv"):
+        if file.endswith("_results.csv") and "nitpicked" not in file and "filtered" not in file:
             steamid = int(file.split("_")[0])
+            if nitpicked_steamids_list is not None and steamid not in nitpicked_steamids_list:
+                continue
             results = pd.read_csv(os.path.join(result_path, folder_name, file))
+            if filter_owned:
+                owned_games = train_data[train_data["steamid"] == steamid]["appid"].values
+                results = results[~results["appid"].isin(owned_games)]
             results_list.append((steamid, results))
     if not from_incomplete:
-        calculate_precision_and_recall(folder_name, results_list, test_data, ignore_incomplete=True)
+        calculate_precision_and_recall(folder_name, results_list, test_data, ignore_incomplete=True, nitpicked_steamids=nitpicked_steamids_list is not None, filter_owned=filter_owned)
     return results_list
 
 
-def calculate_precision_and_recall(recommender_name, results_list, test_data, ignore_incomplete=False):
+def calculate_precision_and_recall(recommender_name, results_list, test_data, ignore_incomplete=False, nitpicked_steamids=False, filter_owned=False):
+    global train_data
     print(f"Calculating precision and recall for {recommender_name}...")
     if not ignore_incomplete and len(results_list) < 100:
         print(f"Warning: {recommender_name} has less than 100 results, fully recomputing")
@@ -82,7 +89,8 @@ def calculate_precision_and_recall(recommender_name, results_list, test_data, ig
     recall_at_10 = []
     recall_at_12 = []  # steam only shows 12 games
     recall_at_20 = []
-    
+    if filter_owned:
+        len_list = []  # (steamid, len(results))
     for steamid, results in results_list:
         # first we need to get the test data for this user
         test_data_games = set(test_data[test_data["steamid"] == steamid]["appid"])
@@ -95,8 +103,12 @@ def calculate_precision_and_recall(recommender_name, results_list, test_data, ig
                     results = [results]
             else:
                 results = results["appid"].values
+            if filter_owned:
+                owned_games = train_data[train_data["steamid"] == steamid]["appid"].values
+                results = results[~np.isin(results, owned_games)]
+                len_list.append((steamid, len(results)))
             if len(results) == 0:
-                print(f"User {steamid} has no recommendations for {recommender_name}, might want to check")
+                # print(f"User {steamid} has no recommendations for {recommender_name}, might want to check")
                 precision.append(0)
                 precision_at_5.append(0)
                 precision_at_10.append(0)
@@ -108,6 +120,7 @@ def calculate_precision_and_recall(recommender_name, results_list, test_data, ig
                 recall_at_12.append(0)
                 recall_at_20.append(0)
                 continue
+
             precision.append(len(set(results).intersection(test_data_games)) / len(results))
             precision_at_5.append(len(set(results[:5]).intersection(test_data_games)) / 5)
             precision_at_10.append(len(set(results[:10]).intersection(test_data_games)) / 10)
@@ -126,7 +139,7 @@ def calculate_precision_and_recall(recommender_name, results_list, test_data, ig
     if not os.path.exists(os.path.join(result_path, recommender_name)):
         os.mkdir(os.path.join(result_path, recommender_name))
     # now we can store the results, 
-    pd.DataFrame({
+    result_df = pd.DataFrame({
         "steamid": [res[0] for res in results_list],
         "precision": precision,
         "precision_at_5": precision_at_5,
@@ -138,9 +151,18 @@ def calculate_precision_and_recall(recommender_name, results_list, test_data, ig
         "recall_at_10": recall_at_10,
         "recall_at_12": recall_at_12,
         "recall_at_20": recall_at_20
-    }).to_csv(os.path.join(result_path, recommender_name, "results.csv"), index=False)
+    })
+    result_df.to_csv(os.path.join(result_path, recommender_name, f"{'' if not filter_owned else 'filtered_'}{'' if not nitpicked_steamids else 'nitpicked_'}results.csv"), index=False)
+    if filter_owned:
+        len_df = pd.DataFrame(len_list, columns=["steamid", "result_length"])
+        len_df.to_csv(os.path.join(result_path, recommender_name, f"{'' if not filter_owned else 'filtered_'}{'' if not nitpicked_steamids else 'nitpicked_'}len.csv"), index=False)
+        print(f"Min result length for {recommender_name}: {len_df['result_length'].min()}")
+        if len_df["result_length"].min() < 20:
+            print("WARNING " * 200)
+        
+    return result_df
 
-def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem, recommender_name: str, steamids: list, test_data: pd.DataFrame):
+def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem, recommender_name: str, steamids: list, test_data: pd.DataFrame, nitpicked_steamids=False):
     # first we need to get the name of the recommender system
     start_time = time.time()
     # before we run the recommender system, check if there's already results
@@ -171,7 +193,7 @@ def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem,
     with open(os.path.join(result_path, recommender_name, "time_in_seconds.txt"), "w") as f:
         f.write(str(finish_time))
     # now we can calculate precision and recall, comparing against the test data
-    calculate_precision_and_recall(recommender_name, results_list, test_data)
+    calculate_precision_and_recall(recommender_name, results_list, test_data, nitpicked_steamids=nitpicked_steamids)
     print(f"Recommender system {recommender_name} finished")
     del results_list
     del recommender_system  # TODO unsure if this works
@@ -202,10 +224,13 @@ recommender_combinations = None # for python -i experiments.py
 game_categories = []
 game_genres = []
 game_tags = []
+train_data = pd.read_csv("data/player_games_train.csv") if os.path.exists("data/player_games_train.csv") else None
+get_only_linear = False
 
 def run_recommender_experiments(cull: int, interactive: bool, only_playtime: bool, nitpicked_steamids: bool):
     global recommender_combinations
     global player_games_playtimes
+    global train_data
     # first check if the data/ folder exists
     if not os.path.exists("data"):
         os.mkdir("data")
@@ -216,11 +241,15 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
         split_train_test.main("data/player_games.csv")
     # now load the data
     print("Loading data...")
-    train_data = pd.read_csv("data/player_games_train.csv")
+    if train_data is None:
+        train_data = pd.read_csv("data/player_games_train.csv")
     test_data = pd.read_csv("data/player_games_test.csv")
     print("Data loaded. Loading normalization classes and similarity classes...")
     # now get all the normalization classes
-    normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer and cls != normalization.NoNormalization]
+    if get_only_linear:
+        normalization_classes = [normalization.LinearPlaytimeNormalizer]
+    else:
+        normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer and cls != normalization.NoNormalization]
     # now get all the similarities, separated by game_similarities and user_similarities
     # similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractSimilarity)]
     game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
@@ -232,8 +261,8 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.6, 0.8]
-    pg_relevant_thresholds = [0.6, 0.8]
+    player_games_minhash_thresholds = [0.8]
+    pg_relevant_thresholds = [0.8]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:
@@ -333,17 +362,23 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # now we can run the experiments
     for recommender_system in recommender_combinations:
         recommender_name = repr(recommender_system)
-        recommender_logic(recommender_system, recommender_name, steamids, test_data)
+        recommender_logic(recommender_system, recommender_name, steamids, test_data, nitpicked_steamids)
     
     print("Finished running all recommender systems. Calculating average precision and recall, and plotting...")
 
 results_for_rec = {}
-def plot_results():
+def plot_results(nitpicked_steamids=False, filter_owned=False):
     global final_results, results_for_rec
     # now we can calculate the average precision and recall for each recommender system
     # first we need to get the names of the recommender systems
     recommender_names = [ f.path for f in os.scandir(result_path) if f.is_dir() ]
     recommender_names = [recommender_name.split("/")[-1] for recommender_name in recommender_names]
+    if nitpicked_steamids:
+        import pickle
+        nitpicked_steamids_list = pickle.load(open("data/nitpicked_steamids.pickle", "rb"))
+    else:
+        nitpicked_steamids_list = None
+    test_data = pd.read_csv("data/player_games_test.csv")
     # now we can calculate the average precision and recall
     average_precision = []
     average_precision_at_5 = []
@@ -358,7 +393,9 @@ def plot_results():
     for recommender_name in recommender_names:
         # first we need to get the results
         try:
-            results = pd.read_csv(os.path.join(result_path, recommender_name, "results.csv"))
+            result_filename = 'nitpicked_results.csv' if nitpicked_steamids else "results.csv"
+            result_filename = 'filtered_' + result_filename if filter_owned else result_filename
+            results = pd.read_csv(os.path.join(result_path, recommender_name, result_filename))
             results_for_rec[recommender_name] = results
             # now we can calculate the average precision and recall
             average_precision.append(results["precision"].mean())
@@ -372,17 +409,21 @@ def plot_results():
             average_recall_at_12.append(results["recall_at_12"].mean())
             average_recall_at_20.append(results["recall_at_20"].mean())
         except FileNotFoundError:
-            print("Could not find results for recommender system (maybe it hasn't finished?): " + recommender_name)
-            average_precision.append(np.NaN)
-            average_precision_at_5.append(np.NaN)
-            average_precision_at_10.append(np.NaN)
-            average_precision_at_12.append(np.NaN)
-            average_precision_at_20.append(np.NaN)
-            average_recall.append(np.NaN)
-            average_recall_at_5.append(np.NaN)
-            average_recall_at_10.append(np.NaN)
-            average_recall_at_12.append(np.NaN)
-            average_recall_at_20.append(np.NaN)
+            print("Recalculating experiment results for " + recommender_name)
+            result_list = calculate_full_precision_and_recall(recommender_name, nitpicked_steamids_list=nitpicked_steamids_list, filter_owned=filter_owned)
+            # first write the results to a file
+            results = calculate_precision_and_recall(recommender_name, result_list, test_data, nitpicked_steamids=nitpicked_steamids, filter_owned=filter_owned)
+            # now we can calculate the average precision and recall
+            average_precision.append(results["precision"].mean())
+            average_precision_at_5.append(results["precision_at_5"].mean())
+            average_precision_at_10.append(results["precision_at_10"].mean())
+            average_precision_at_12.append(results["precision_at_12"].mean())
+            average_precision_at_20.append(results["precision_at_20"].mean())
+            average_recall.append(results["recall"].mean())
+            average_recall_at_5.append(results["recall_at_5"].mean())
+            average_recall_at_10.append(results["recall_at_10"].mean())
+            average_recall_at_12.append(results["recall_at_12"].mean())
+            average_recall_at_20.append(results["recall_at_20"].mean())
 
     # now we can store the results
     final_results = pd.DataFrame({
@@ -398,7 +439,7 @@ def plot_results():
         "average_recall_at_12": average_recall_at_12,
         "average_recall_at_20": average_recall_at_20
     })
-    final_results.to_csv(os.path.join(result_path, "average_results.csv"), index=False)
+    final_results.to_csv(os.path.join(result_path, f"{'' if not filter_owned else 'filtered_'}{'' if not nitpicked_steamids else 'nitpicked_'}average_results.csv"), index=False)
     print("Final results saved to results/average_results.csv. Plotting and saving to results/results.png...")
     # now we can plot the results
     fig, ax = plt.subplots(1, 2, figsize=(20, 10))
@@ -475,6 +516,7 @@ if __name__ == "__main__":
         parser.add_argument("--cull", type=int, default=-1, help="Cull the users to test. Mostly debugging purposes.")
         parser.add_argument("-pt","--only_playtime", action="store_true", help="Only compute playtime, useful when done with the Content Based recommender systems.")
         parser.add_argument("-np","--use_nitpicked_steamids", action="store_true", help="Use the nitpicked steamids instead of the topN_steamid list. Useful for debugging purposes.")
+        parser.add_argument("-f", "--filter_owned", action="store_true", help="Filter out games that the user owns. Useful for debugging purposes.")
         # parser.add_argument("--interactive", action="store_true", help="Run the program in interactive mode. Mostly for debugging purposes.")
         parser.add_argument("-i", "--interactive", action="store_true", help="Run the program in interactive mode. Mostly for debugging purposes.")
         args = parser.parse_args()
@@ -485,7 +527,7 @@ if __name__ == "__main__":
         if args.skip_plot:
             print("Skipping plotting results...")
         else:
-            plot_results()
+            plot_results(args.use_nitpicked_steamids, args.filter_owned)
             # used for debugging purposes
             if args.interactive:
                 # note: if we tried to get them from anything other than 'GameTag' recommender similarities,

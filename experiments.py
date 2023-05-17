@@ -41,7 +41,7 @@ def recommend_user(recommender_system: recommender.AbstractRecommenderSystem, re
     results_file = os.path.join(result_path, recommender_name, f"{steamid}_results.csv")
     if os.path.exists(results_file):
         return (steamid, pd.read_csv(results_file))
-    results = recommender_system.recommend(steamid, n=50, filter_owned=False)
+    results = recommender_system.recommend(steamid, n=20, filter_owned=True)
     # results_list.append((steamid, results))
     # store the results, which are a DataFrame (or if they're a list of tuples, we can convert it to a DataFrame)
     if not os.path.exists(os.path.join(result_path, recommender_name)):
@@ -225,7 +225,7 @@ game_categories = []
 game_genres = []
 game_tags = []
 train_data = pd.read_csv("data/player_games_train.csv") if os.path.exists("data/player_games_train.csv") else None
-get_only_linear = False
+get_only_linear = True
 
 def run_recommender_experiments(cull: int, interactive: bool, only_playtime: bool, nitpicked_steamids: bool):
     global recommender_combinations
@@ -247,7 +247,7 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     print("Data loaded. Loading normalization classes and similarity classes...")
     # now get all the normalization classes
     if get_only_linear:
-        normalization_classes = [normalization.LinearPlaytimeNormalizer]
+        normalization_classes = [normalization.LogPlaytimeNormalizer]
     else:
         normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer and cls != normalization.NoNormalization]
     # now get all the similarities, separated by game_similarities and user_similarities
@@ -255,14 +255,15 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
     game_tag_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawGameTagSimilarity)]
     
-    user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
+    # user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
+    user_similarity_types = [recommender.PearsonUserSimilarity]
     print("Normalization classes and similarity classes loaded.\nInstantiating player game data with different playtime normalizers. This might take very long...")
     # now we want to mix recommender.PlayerGamesPlaytime with every normalization class with thresholds from 0.1 to 0.9
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
     player_games_minhash_thresholds = [0.8]
-    pg_relevant_thresholds = [0.8]
+    pg_relevant_thresholds = [0.6]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:
@@ -335,7 +336,7 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     user_similarities = []
     for user_similarity_type in user_similarity_types:
         for pgdata in player_games_playtimes:
-            user_similarities.append(user_similarity_type(pgdata))
+            user_similarities.append(user_similarity_type(pgdata, parallel=True))
 
     recommender_combinations = [] # [recommender.RandomRecommenderSystem(), recommender.RatingBasedRecommenderSystem(game_details, player_games_playtimes[0])]
     if not only_playtime:
@@ -360,6 +361,7 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
         if cull > 0:
             steamids = steamids[:cull]
     # now we can run the experiments
+    input("Press Enter to start running the experiments...")
     for recommender_system in recommender_combinations:
         recommender_name = repr(recommender_system)
         recommender_logic(recommender_system, recommender_name, steamids, test_data, nitpicked_steamids)

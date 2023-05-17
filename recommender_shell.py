@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
                     )
 
 # variables
-steamid = 76561197960269908
+steamid = 76561197990621513
 
 # game info
 game_details = GameDetails('data/game_details.csv')
@@ -25,16 +25,16 @@ game_info = GameInfo(game_details, game_categories, game_developers, game_publis
 
 # recommender systems and similarity objects
 rand = RandomRecommenderSystem()
-pgdata = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True))
-pgdata_lin = PlayerGamesPlaytime('data/player_games_train.csv', LinearPlaytimeNormalizer('sum_max', inplace=True))
+pgdata = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('max', inplace=True))
+pgdata_lin = PlayerGamesPlaytime('data/player_games_train.csv', LinearPlaytimeNormalizer('max', inplace=True))
 load_more_pgdatas = False
 if load_more_pgdatas is None:
     load_more_pgdatas = input("Load more pgdatas? (y/n) ")
     load_more_pgdatas = load_more_pgdatas == 'y'
 if load_more_pgdatas:
-    pgdata_lowrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0, minhash_threshold=0.6)
-    pgdata_highrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), relevant_threshold=0.75, minhash_threshold=0.5)
-    pgdata_lowthres = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('sum_max', inplace=True), minhash_threshold=0.2)
+    pgdata_lowrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('max', inplace=True), relevant_threshold=0, minhash_threshold=0.6)
+    pgdata_highrele = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('max', inplace=True), relevant_threshold=0.75, minhash_threshold=0.5)
+    pgdata_lowthres = PlayerGamesPlaytime('data/player_games_train.csv', LogPlaytimeNormalizer('max', inplace=True), minhash_threshold=0.2)
 else:
     pgdata_lowrele = pgdata
     pgdata_highrele = pgdata
@@ -67,11 +67,11 @@ gpub_rec = ContentBasedRecommenderSystem(pgdata, gpub_sim)
 cbr = HybridRecommenderSystem(pgdata, (pbr, 3), (tbr, 3), (gdet_rec, 1), (gdev_rec, 1), (gpub_rec, 0.5), (ggen_rec, 0.2), (gcat_rec, 0.5))
 
 start_time = time.time()
-pbr_recommendations = pbr.recommend(steamid, n=10, n_users=50, filter_owned=False)
-print("pbr.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
-# start_time = time.time()
-# pbr_lowthres_recommendations = pbr_lowthres.recommend(steamid, n=10, n_users=40)
-# print("pbr_lowthres.recommend(steamid, n=10, n_users=40) took %s seconds" % (time.time() - start_time))
+pbr_recommendations = pbr.recommend(steamid, n=50, n_users=150, filter_owned=True)
+print("pbr.recommend(steamid, n=50, n_users=150) took %s seconds" % (time.time() - start_time))
+start_time = time.time()
+pbr_st_recommendations = pbr_st.recommend(steamid, n=50, n_users=150, filter_owned=True)
+print("pbr_st.recommend(steamid, n=50, n_users=150) took %s seconds" % (time.time() - start_time))
 start_time = time.time()
 tbr_recommendations = tbr.recommend(steamid, n=50)
 cbr_recommendations = cbr.recommend(steamid, n=50)

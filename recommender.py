@@ -15,7 +15,7 @@ import atexit
 import config
 import difflib
 from datetime import datetime, timedelta
-from joblib import Parallel, delayed
+# from joblib import Parallel, delayed
 import concurrent.futures as cf
 from utils import ChainedAssignment
 
@@ -25,7 +25,7 @@ def trivial_hash(x):
 BIN_DATA_PATH = "bin_data"
 GLOBAL_CACHE = {}  # used mainly to not run out of RAM in experiments.py
 
-GLOBAL_THREAD_EXECUTOR = cf.ThreadPoolExecutor()
+GLOBAL_THREAD_EXECUTOR = cf.ThreadPoolExecutor(6)
 atexit.register(GLOBAL_THREAD_EXECUTOR.shutdown)
 
 class AbstractRecommenderData(ABC):
@@ -216,7 +216,7 @@ class PlayerGamesPlaytime(AbstractRecommenderData):
             logging.info("Data normalized.")
             with open(self.norm_path, "wb") as f:
                 pickle.dump(self.data, f)
-                logging.info("Normalized data dumped to file")
+                logging.info(f"Normalized data dumped to file {f.name}")
             GLOBAL_CACHE[self.norm_file] = self.data
         
         # compute the MinHashLSHEnsemble index
@@ -1506,7 +1506,7 @@ class RawUserSimilarity(AbstractSimilarity):
             if other == steamid:
                 continue
             similarity = self.similarity(steamid, other)
-            similar_users.append((other, similarity))
+            similar_users.append((similarity, other))
         return similar_users
     
     def chunks(self, l: List, n: int) -> List[List]:
@@ -1545,8 +1545,8 @@ class RawUserSimilarity(AbstractSimilarity):
             futures = []
             max_workers = GLOBAL_THREAD_EXECUTOR._max_workers
             rough_similar_users = list(rough_similar_users)
-            count_per_worker = len(rough_similar_users) / max_workers
-            for batch in self.chunks(rough_similar_users, int(count_per_worker)):
+            count_per_worker = len(rough_similar_users) / max_workers / 4
+            for batch in self.chunks(rough_similar_users, math.ceil(count_per_worker)):
                 futures.append(GLOBAL_THREAD_EXECUTOR.submit(self.similarity_batch, steamid, batch))
             for future in cf.as_completed(futures):
                 similar_users = future.result()
@@ -2527,8 +2527,11 @@ class AbstractRecommenderSystem(ABC):
         
         # get the top n games
         #if n == -1:
-        results = games if not filter_owned \
-            else {k: v for k, v in games.items() if k not in self.pgdata.get_user_games(steamid)["appid"].values}
+        if filter_owned:
+            user_games = self.pgdata.get_user_games(steamid)["appid"].values
+            results = {k: v for k, v in games.items() if k not in user_games} 
+        else:
+            results = games
         #else:
         #    results = {k: v for k, v in list(games.items())[:n] if k not in self.pgdata.get_user_games(steamid)} if filter_owned else {k: v for k, v in list(games.items())[:n]}
         

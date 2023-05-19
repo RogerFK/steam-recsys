@@ -167,3 +167,4 @@ test_output/
 *pickle
 data/
 *results/
+*results_np/

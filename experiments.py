@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 # change BIN_DATA_PATH to "bin_data_test" to avoid conflicts
 recommender.BIN_DATA_PATH = "experiments/bin_data/"
-result_path = "experiments/results/"
+result_path = "experiments/results_np/"
 os.makedirs(recommender.BIN_DATA_PATH, exist_ok=True)
 os.makedirs(result_path, exist_ok=True)
 
@@ -156,10 +156,9 @@ def calculate_precision_and_recall(recommender_name, results_list, test_data, ig
     if filter_owned:
         len_df = pd.DataFrame(len_list, columns=["steamid", "result_length"])
         len_df.to_csv(os.path.join(result_path, recommender_name, f"{'' if not filter_owned else 'filtered_'}{'' if not nitpicked_steamids else 'nitpicked_'}len.csv"), index=False)
-        print(f"Min result length for {recommender_name}: {len_df['result_length'].min()}")
+        minim = len_df["result_length"].min()
         if len_df["result_length"].min() < 20:
-            print("WARNING " * 200)
-        
+            print(f"WARNING for {recommender_name}: {minim}")        
     return result_df
 
 def recommender_logic(recommender_system: recommender.AbstractRecommenderSystem, recommender_name: str, steamids: list, test_data: pd.DataFrame, nitpicked_steamids=False):
@@ -262,8 +261,8 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.8]
-    pg_relevant_thresholds = [0.6]
+    player_games_minhash_thresholds = [0.6, 0.8]
+    pg_relevant_thresholds = [0.6, 0.8]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:

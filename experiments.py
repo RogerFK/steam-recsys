@@ -246,14 +246,14 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     print("Data loaded. Loading normalization classes and similarity classes...")
     # now get all the normalization classes
     if get_only_linear:
-        normalization_classes = [normalization.LogPlaytimeNormalizer]
+        normalization_classes = [normalization.LinearPlaytimeNormalizer]
     else:
         normalization_classes = [cls for cls in normalization.__dict__.values() if isinstance(cls, type) and issubclass(cls, normalization.AbstractPlaytimeNormalizer) and cls != normalization.AbstractPlaytimeNormalizer and cls != normalization.NoNormalization]
     # now get all the similarities, separated by game_similarities and user_similarities
     # similarities = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractSimilarity)]
     game_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.AbstractGameSimilarity) and sim != recommender.AbstractGameSimilarity and sim != recommender.GameDetailsSimilarity and not issubclass(sim, recommender.RawGameTagSimilarity)]
-    game_tag_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawGameTagSimilarity)]
-    
+    # game_tag_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawGameTagSimilarity)]
+    game_tag_similarity_types = [recommender.PearsonGameTagSimilarity]
     # user_similarity_types = [sim for sim in recommender.__dict__.values() if isinstance(sim, type) and issubclass(sim, recommender.RawUserSimilarity)]
     user_similarity_types = [recommender.PearsonUserSimilarity]
     print("Normalization classes and similarity classes loaded.\nInstantiating player game data with different playtime normalizers. This might take very long...")
@@ -261,8 +261,8 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # first we need to get all the combinations of normalization classes and thresholds
     # to instantiate every PlayerGamesPlaytime with every normalization class and threshold
     
-    player_games_minhash_thresholds = [0.6, 0.8]
-    pg_relevant_thresholds = [0.6, 0.8]
+    player_games_minhash_thresholds = [0.8]
+    pg_relevant_thresholds = [0.8]
     print("Instantiating PlayerGamesPlaytimes with different thresholds and normalizers in serial...")
     for normalization_class in normalization_classes:
         for minhash_threshold in player_games_minhash_thresholds:
@@ -278,15 +278,15 @@ def run_recommender_experiments(cull: int, interactive: bool, only_playtime: boo
     # also doing this programatically is harder than doing it by hand, I just took this from recommender_shell.py
     if not only_playtime:
         print("Instantiating basic Recommender Data classes...")
-        game_similarity_thresholds = np.append(np.linspace(0.3, 0.8, 5), [1, 1.01])  # threshold >1 means linear search / other methods will be used
+        game_similarity_thresholds = [0.3, 0.42, 0.55, 0.68, 1.01]  # threshold >1 means linear search / other methods will be used
         # game_details = recommender.GameDetails('data/game_details.csv')  # this one is global
         game_details = None
         game_developers = recommender.GameDevelopers('data/game_developers_empty.csv')
         game_publishers = recommender.GamePublishers('data/game_publishers_empty.csv')
         game_categories_csv = pd.read_csv('data/game_categories_empty.csv')
         game_genres_csv = pd.read_csv('data/game_genres_empty.csv')
-        game_tags_csv = pd.read_csv('data/game_tags_empty.csv')
-        idf_weights = np.linspace(0, 0.6, 3)
+        game_tags_csv = pd.read_csv('data/game_tags.csv')
+        idf_weights = [0.6]
         weight_thresholds = [0.75, 1] # np.linspace(0.5, 1, 3)
         
         print("Instantiating complex Recommender Data with different thresholds in serial...")

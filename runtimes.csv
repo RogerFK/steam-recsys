@@ -1,0 +1,110 @@
+recommender,runtime
+"PlaytimeBasedRecommenderSystem with CosineUserSimilarity(pgdata=PlayerGamesPlaytime(LinearPN_sum_maxmamt60_5.0x, rel_0.60, lsh_0.80, 128, 32))",61063.855001
+"PlaytimeBasedRecommenderSystem with CosineUserSimilarity(pgdata=PlayerGamesPlaytime(LogPN_sum_maxmamt60_5.0x, rel_0.60, lsh_0.80, 128, 32))",61105.110997
+"PlaytimeBasedRecommenderSystem with CosineUserSimilarity(pgdata=PlayerGamesPlaytime(RootPN_sum_maxmamt60_5x_2root, rel_0.60, lsh_0.80, 128, 32))",61033.860001
+"PlaytimeBasedRecommenderSystem with PearsonUserSimilarity(pgdata=PlayerGamesPlaytime(LinearPN_sum_maxmamt60_5.0x, rel_0.60, lsh_0.80, 128, 32))",94042.028500
+"PlaytimeBasedRecommenderSystem with PearsonUserSimilarity(pgdata=PlayerGamesPlaytime(LogPN_sum_maxmamt60_5.0x, rel_0.60, lsh_0.80, 128, 32))",95043.246704
+"PlaytimeBasedRecommenderSystem with PearsonUserSimilarity(pgdata=PlayerGamesPlaytime(RootPN_sum_maxmamt60_5x_2root, rel_0.60, lsh_0.80, 128, 32))",95983.369502
+"PlaytimeBasedRecommenderSystem with RawUserSimilarity(pgdata=PlayerGamesPlaytime(LinearPN_sum_maxmamt60_5.0x, rel_0.60, lsh_0.80, 128, 32))",65261.462503
+"PlaytimeBasedRecommenderSystem with RawUserSimilarity(pgdata=PlayerGamesPlaytime(LogPN_sum_maxmamt60_5.0x, rel_0.60, lsh_0.80, 128, 32))",65443.070999
+"PlaytimeBasedRecommenderSystem with RawUserSimilarity(pgdata=PlayerGamesPlaytime(RootPN_sum_maxmamt60_5x_2root, rel_0.60, lsh_0.80, 128, 32))",65674.903999
+"RandomRecommenderSystem",4.709501
+"RatingBasedRecommenderSystem",705.539999
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.00, perm=128, part=32)",11755.107604
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.15, perm=128, part=32)",11344.161609
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.30, perm=128, part=32)",10999.538602
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.60, perm=128, part=32)",11594.834605
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.00, perm=128, part=32)",8863.916747
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.15, perm=128, part=32)",8488.361988
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.30, perm=128, part=32)",9047.264516
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.60, perm=128, part=32)",7516.963363
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.00, perm=128, part=32)",3203.492000
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.15, perm=128, part=32)",3059.564498
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.30, perm=128, part=32)",2788.252000
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.60, perm=128, part=32)",2243.876213
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.00, perm=128, part=32)",938.327499
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.15, perm=128, part=32)",894.762499
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.30, perm=128, part=32)",795.988000
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.60, perm=128, part=32)",672.880924
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.00, perm=128, part=32)",857.809696
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.30, perm=128, part=32)",703.808500
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.60, perm=128, part=32)",602.816205
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.00, perm=128, part=32)",70.440908
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.30, perm=128, part=32)",70.683105
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.60, perm=128, part=32)",71.048745
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.00, perm=128, part=32)",21122.061535
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.30, perm=128, part=32)",21643.332531
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.60, perm=128, part=32)",24006.800470
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.00, perm=128, part=32)",7829.898880
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.30, perm=128, part=32)",7178.755021
+"Recommender from CosineGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.60, perm=128, part=32)",6633.293000
+"Recommender from GameCategoriesSimilarity (GameCategories(nolsh))",18.697503
+"Recommender from GameCategoriesSimilarity (GameCategories(thres=0.30, perm=128, part=32))",5114.462642
+"Recommender from GameCategoriesSimilarity (GameCategories(thres=0.42, perm=128, part=32))",1869.481600
+"Recommender from GameCategoriesSimilarity (GameCategories(thres=0.55, perm=128, part=32))",63.370899
+"Recommender from GameCategoriesSimilarity (GameCategories(thres=0.68, perm=128, part=32))",61.137573
+"Recommender from GameCategoriesSimilarity (GameCategories(thres=0.80, perm=128, part=32))",59.928137
+"Recommender from GameCategoriesSimilarity (GameCategories(thres=1.00, perm=128, part=32))",18.976179
+"Recommender from GameDetailsSimilarity (GameDetails(rating_multiplier=5.0))",21246.188976
+"Recommender from GameDevelopersSimilarity (GameDevelopers)",1397.427251
+"Recommender from GameGenresSimilarity (GameGenres(nolsh))",19.155040
+"Recommender from GameGenresSimilarity (GameGenres(thres=0.30, perm=128, part=32))",4119.414466
+"Recommender from GameGenresSimilarity (GameGenres(thres=0.42, perm=128, part=32))",2246.401615
+"Recommender from GameGenresSimilarity (GameGenres(thres=0.55, perm=128, part=32))",255.786502
+"Recommender from GameGenresSimilarity (GameGenres(thres=0.68, perm=128, part=32))",240.205006
+"Recommender from GameGenresSimilarity (GameGenres(thres=0.80, perm=128, part=32))",235.475374
+"Recommender from GameGenresSimilarity (GameGenres(thres=1.00, perm=128, part=32))",19.075628
+"Recommender from GamePublishersSimilarity (GamePublishers)",3021.032981
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.00, perm=128, part=32)",12546.611001
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.30, perm=128, part=32)",11194.176701
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.60, perm=128, part=32)",10143.358709
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.00, perm=128, part=32)",9503.363000
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.30, perm=128, part=32)",8701.973560
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.60, perm=128, part=32)",7726.874000
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.00, perm=128, part=32)",3372.072216
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.30, perm=128, part=32)",2815.234818
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.60, perm=128, part=32)",2313.003346
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.00, perm=128, part=32)",1015.882503
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.30, perm=128, part=32)",870.830000
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.60, perm=128, part=32)",703.102500
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.00, perm=128, part=32)",897.511500
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.30, perm=128, part=32)",740.985000
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.60, perm=128, part=32)",637.719827
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.00, perm=128, part=32)",75.416596
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.30, perm=128, part=32)",75.289622
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.60, perm=128, part=32)",75.242260
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.00, perm=128, part=32)",21702.633315
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.30, perm=128, part=32)",20958.100000
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.60, perm=128, part=32)",19894.658007
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.00, perm=128, part=32)",7644.601703
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.30, perm=128, part=32)",7131.273721
+"Recommender from PearsonGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.60, perm=128, part=32)",6382.214500
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.00, perm=128, part=32)",13594.604780
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.15, perm=128, part=32)",14949.598002
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.30, perm=128, part=32)",11879.062876
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.30, idf_w=0.60, perm=128, part=32)",9379.582472
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.00, perm=128, part=32)",10241.594223
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.15, perm=128, part=32)",9034.588805
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.30, perm=128, part=32)",8600.506537
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.42, idf_w=0.60, perm=128, part=32)",9571.940044
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.00, perm=128, part=32)",3052.292028
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.15, perm=128, part=32)",2954.205309
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.30, perm=128, part=32)",2873.437728
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.55, idf_w=0.60, perm=128, part=32)",2313.823998
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.00, perm=128, part=32)",963.789600
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.15, perm=128, part=32)",918.725972
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.30, perm=128, part=32)",864.999945
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.68, idf_w=0.60, perm=128, part=32)",824.774499
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.00, perm=128, part=32)",850.725811
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.15, perm=128, part=32)",806.088390
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.30, perm=128, part=32)",752.465202
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=0.80, idf_w=0.60, perm=128, part=32)",720.420500
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.00, perm=128, part=32)",69.070266
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.30, perm=128, part=32)",68.113657
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(thres=1.00, idf_w=0.60, perm=128, part=32)",68.212170
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.00, perm=128, part=32)",23142.234664
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.30, perm=128, part=32)",19974.601831
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(wt=0.75, idf_w=0.60, perm=128, part=32)",20120.963108
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.00, perm=128, part=32)",8675.466925
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.30, perm=128, part=32)",8134.268135
+"Recommender from RawGameTagSimilarity with game_tags=GameTags(wt=1.00, idf_w=0.60, perm=128, part=32)",6528.089501

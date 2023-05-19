@@ -1776,7 +1776,7 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         super().__init__(self.game_tags)
         self.item_weight_max_length = GameTags.MAX_LENGTH
 
-    def similarity(self, appid: int, other: int) -> float:
+    def similarity(self, appid: Union[int,dict], other: int) -> float:
         """
         Description:
         ---
@@ -1791,7 +1791,10 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         ---
         float: The similarity between the two games
         """
-        tags = self.game_tags.get_tags(appid)
+        if isinstance(appid, int):
+            tags = self.game_tags.get_tags(appid)
+        else:
+            tags = appid
         other_tags = self.game_tags.get_tags(other)
         # compute the similarity
         similarity = 0
@@ -1848,6 +1851,23 @@ class RawGameTagSimilarity(AbstractGameSimilarity):
         """
         return list(self.game_tags.get_tags(appid).items())
     
+    def custom_score_generation(self, appid: int, item_weights: dict) -> float:
+        """
+        Description:
+        ---
+        Computes the similarity between a game and a user, only taking into account the tags.
+
+        Args:
+        ---
+        appid (int): The appid of the game
+        item_weights (dict): The item weights of the user
+
+        Returns:
+        ---
+        float: The similarity between the game and the user
+        """
+        return self.similarity(item_weights, appid)
+    
     def __repr__(self) -> str:
         return f"{self.__class__.__name__} with game_tags={self.game_tags}"
 
@@ -1858,7 +1878,7 @@ class CosineGameTagSimilarity(RawGameTagSimilarity):
         # and thus the overhead of accessing the norm through a dictionary is higher than
         # just computing it on the fly
 
-    def similarity(self, appid: int, other: int) -> float:
+    def similarity(self, appid: Union[int,Dict[int, float]], other: int) -> float:
         """
         Description:
         ---
@@ -1873,7 +1893,10 @@ class CosineGameTagSimilarity(RawGameTagSimilarity):
         ---
         float: The similarity between the two games
         """
-        tags = self.game_tags.get_tags(appid)
+        if isinstance(appid, int):
+            tags = self.game_tags.get_tags(appid)
+        else:
+            tags = appid
         other_tags = self.game_tags.get_tags(other)
         
         # compute the similarity
@@ -1895,7 +1918,7 @@ class PearsonGameTagSimilarity(RawGameTagSimilarity):
         # a game has 19 tags and thus the overhead of accessing the norm through
         # a dictionary is higher than just computing it on the fly
 
-    def similarity(self, appid: int, other: int) -> float:
+    def similarity(self, appid: Union[int,Dict[int, float]], other: int) -> float:
         """
         Description:
         ---
@@ -1910,7 +1933,10 @@ class PearsonGameTagSimilarity(RawGameTagSimilarity):
         ---
         float: The similarity between the two games
         """
-        tags = self.game_tags.get_tags(appid)
+        if isinstance(appid, int):
+            tags = self.game_tags.get_tags(appid)
+        else:
+            tags = appid
         other_tags = self.game_tags.get_tags(other)
 
         # compute the similarity
@@ -1927,7 +1953,7 @@ class PearsonGameTagSimilarity(RawGameTagSimilarity):
             other_mean += weight
         own_mean /= len(tags)
         other_mean /= len(other_tags)
-        for tagid, weight in tags:
+        for tagid, weight in tags.items():
             if tagid in other_tags:
                 similarity += (weight - own_mean) * (other_tags[tagid] - other_mean)
         return similarity / (own_norm * other_norm) ** 0.5
